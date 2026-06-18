@@ -1,0 +1,15 @@
+# Python virtual env
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+
+# Training output (weights are large, results are run artifacts)
+PCB_defect_detection/
+
+# Ultralytics cache / runs
+runs/
+**/predict*

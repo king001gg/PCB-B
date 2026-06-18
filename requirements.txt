@@ -1,0 +1,48 @@
+# ============================================================================
+# PCB 阻焊前喷砂质量在线检测系统 — Python 依赖
+# ============================================================================
+# 安装方法: pip install -r requirements.txt
+#
+# 注意: PyTorch 请根据 GPU 配置单独安装，参考 https://pytorch.org
+#   CPU-only: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+#   CUDA 11.8: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+#   CUDA 12.1: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+# ============================================================================
+
+# --- 核心图像处理 ---
+opencv-python>=4.9.0
+numpy>=1.26.0,<3.0
+scipy>=1.11.0
+
+# --- 纹理分析与机器学习 ---
+scikit-image>=0.22.0          # GLCM, LBP, Gabor 纹理特征
+scikit-learn>=1.3.0            # SVM 分类器
+
+# --- 深度学习（可选） ---
+# torch>=2.0.0                 # 单独安装，见上方说明
+# torchvision>=0.15.0          # MobileNet 等预训练模型
+
+# --- 配置 ---
+pyyaml>=6.0
+
+# --- GUI 界面 ---
+PySide6>=6.5.0
+
+# --- 数据可视化 ---
+matplotlib>=3.8.0              # 统计图表，直方图，雷达图
+
+# --- 数据存储 ---
+pandas>=2.1.0                  # 数据分析
+openpyxl>=3.1.0               # Excel 读写
+
+# --- PLC 通信（可选） ---
+# pymodbus>=3.6.0             # Modbus RTU/TCP 通信
+
+# --- PDF 报告（可选） ---
+# fpdf2>=2.7.0                # PDF 检测报告生成
+
+# --- 合成数据生成（可选） ---
+# noise>=1.2.2                # Perlin 噪声库（回退到纯 Python 实现）
+
+# --- 测试 ---
+pytest>=7.4.0

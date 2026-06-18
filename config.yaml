@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# PCB Defect Detection — unified configuration
+# ---------------------------------------------------------------------------
+
+# Path to trained model weights (used by detector)
+model_path: "models/best.pt"
+
+# Device for inference & training: "auto" | "cpu" | "cuda" | "0"
+device: "auto"
+
+# Defect class names (must match training data order)
+class_names:
+  - "missing_hole"
+  - "mouse_bite"
+  - "open_circuit"
+  - "short"
+  - "spur"
+  - "spurious_copper"
+
+# Minimum confidence to report a detection
+confidence_threshold: 0.5
+
+# Input image size for inference
+input_size:
+  width: 640
+  height: 640
+
+# ---------------------------------------------------------------------------
+# Training hyperparameters
+# ---------------------------------------------------------------------------
+training:
+  pretrained_model: "yolov8n.pt"       # base checkpoint
+  data_yaml: "data.yaml"               # dataset definition
+  epochs: 100
+  imgsz: 640
+  batch: 8                             # increase if GPU memory allows
+  lr0: 0.01                            # initial learning rate
+  device: "auto"                       # "cpu" | "cuda" | "0" | "auto"
+  project: "PCB_defect_detection"      # output directory
+  name: "yolov8n_pcb"                  # run name
+  exist_ok: true                       # overwrite existing run directory
+  mosaic: 0.0                          # mosaic augmentation (0 = disabled)
+  patience: 50                         # early-stopping patience
