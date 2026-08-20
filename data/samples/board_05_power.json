@@ -1,0 +1,63 @@
+{
+  "image": "board_05_power.jpg",
+  "image_size": {
+    "width": 800,
+    "height": 600
+  },
+  "detections": [
+    {
+      "bbox": [
+        284,
+        284,
+        316,
+        316
+      ],
+      "class_name": "missing_hole"
+    },
+    {
+      "bbox": [
+        545,
+        294,
+        557,
+        306
+      ],
+      "class_name": "mouse_bite"
+    },
+    {
+      "bbox": [
+        394,
+        330,
+        406,
+        342
+      ],
+      "class_name": "open_circuit"
+    },
+    {
+      "bbox": [
+        431,
+        191,
+        449,
+        209
+      ],
+      "class_name": "short"
+    },
+    {
+      "bbox": [
+        296,
+        288,
+        313,
+        302
+      ],
+      "class_name": "spur"
+    },
+    {
+      "bbox": [
+        666,
+        261,
+        696,
+        291
+      ],
+      "class_name": "spurious_copper"
+    }
+  ]
+}

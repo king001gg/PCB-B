@@ -1,0 +1,72 @@
+{
+  "image": "board_04_mixed_signal.jpg",
+  "image_size": {
+    "width": 800,
+    "height": 600
+  },
+  "detections": [
+    {
+      "bbox": [
+        187,
+        247,
+        213,
+        273
+      ],
+      "class_name": "missing_hole"
+    },
+    {
+      "bbox": [
+        137,
+        331,
+        155,
+        349
+      ],
+      "class_name": "mouse_bite"
+    },
+    {
+      "bbox": [
+        420,
+        256,
+        440,
+        276
+      ],
+      "class_name": "open_circuit"
+    },
+    {
+      "bbox": [
+        578,
+        291,
+        596,
+        309
+      ],
+      "class_name": "short"
+    },
+    {
+      "bbox": [
+        221,
+        410,
+        229,
+        422
+      ],
+      "class_name": "spur"
+    },
+    {
+      "bbox": [
+        367,
+        249,
+        399,
+        281
+      ],
+      "class_name": "spurious_copper"
+    },
+    {
+      "bbox": [
+        627,
+        527,
+        653,
+        553
+      ],
+      "class_name": "missing_hole"
+    }
+  ]
+}

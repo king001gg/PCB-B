@@ -1,0 +1,63 @@
+{
+  "image": "board_02_grid.jpg",
+  "image_size": {
+    "width": 800,
+    "height": 600
+  },
+  "detections": [
+    {
+      "bbox": [
+        336,
+        206,
+        364,
+        234
+      ],
+      "class_name": "missing_hole"
+    },
+    {
+      "bbox": [
+        318,
+        333,
+        332,
+        347
+      ],
+      "class_name": "mouse_bite"
+    },
+    {
+      "bbox": [
+        468,
+        452,
+        484,
+        468
+      ],
+      "class_name": "open_circuit"
+    },
+    {
+      "bbox": [
+        242,
+        152,
+        258,
+        168
+      ],
+      "class_name": "short"
+    },
+    {
+      "bbox": [
+        349,
+        458,
+        358,
+        471
+      ],
+      "class_name": "spur"
+    },
+    {
+      "bbox": [
+        666,
+        183,
+        690,
+        207
+      ],
+      "class_name": "spurious_copper"
+    }
+  ]
+}

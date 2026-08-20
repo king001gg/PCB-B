@@ -1,0 +1,72 @@
+{
+  "image": "board_06_dense.jpg",
+  "image_size": {
+    "width": 800,
+    "height": 600
+  },
+  "detections": [
+    {
+      "bbox": [
+        186,
+        286,
+        214,
+        314
+      ],
+      "class_name": "missing_hole"
+    },
+    {
+      "bbox": [
+        363,
+        391,
+        381,
+        409
+      ],
+      "class_name": "mouse_bite"
+    },
+    {
+      "bbox": [
+        459,
+        194,
+        471,
+        206
+      ],
+      "class_name": "open_circuit"
+    },
+    {
+      "bbox": [
+        401,
+        292,
+        417,
+        308
+      ],
+      "class_name": "short"
+    },
+    {
+      "bbox": [
+        271,
+        489,
+        286,
+        502
+      ],
+      "class_name": "spur"
+    },
+    {
+      "bbox": [
+        235,
+        315,
+        273,
+        353
+      ],
+      "class_name": "spurious_copper"
+    },
+    {
+      "bbox": [
+        581,
+        192,
+        597,
+        208
+      ],
+      "class_name": "short"
+    }
+  ]
+}

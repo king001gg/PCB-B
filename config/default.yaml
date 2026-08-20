@@ -1,0 +1,137 @@
+# ============================================================================
+# PCB 阻焊前喷砂质量在线检测系统 — 统一配置文件
+# ============================================================================
+# 本文件定义系统、检测算法、相机、PLC 等全部参数。
+# 修改后无需重启软件，支持实时重载（检测模块在每次运行前读取最新值）。
+# ============================================================================
+
+system:
+  mode: "offline"          # online（相机实时） | offline（文件加载）
+  image_dir: "data/samples" # 离线模式下的图像目录
+  camera_id: 0             # 在线模式下的相机编号
+  trigger_mode: "manual"   # manual（手动触发） | external（外部信号触发）
+  resolution_mm_per_pixel: 0.01   # 图像空间分辨率
+  board_width_mm: 200             # PCB 板宽度（用于面积百分比计算）
+  board_height_mm: 150            # PCB 板高度
+
+# ----------------------------------------------------------------------------
+# 检测参数
+# ----------------------------------------------------------------------------
+inspection:
+  # --- ROI 提取 ---
+  roi:
+    enabled: false                 # 是否启用 ROI 自动提取
+    copper_hsv_lower: [0, 30, 60]  # 铜面 HSV 下界 (H, S, V)
+    copper_hsv_upper: [25, 255, 255] # 铜面 HSV 上界
+
+  # --- 图像预处理 ---
+  preprocessing:
+    retinex:
+      enabled: true
+      sigma: [15, 80, 250]         # 多尺度 Retinex 高斯核 σ
+      gain: 128                    # MSRCR 增益
+      offset: 128                  # MSRCR 偏置
+    clahe:
+      enabled: true
+      clip_limit: 2.0              # CLAHE 对比度裁剪限制
+      tile_size: [8, 8]            # CLAHE 网格尺寸
+
+  # --- 纹理特征提取 ---
+  texture:
+    glcm:
+      distances: [1, 3, 5]         # 像素距离
+      angles: [0, 45, 90, 135]     # 角度（度）
+      levels: 256                  # 灰度级数
+      symmetric: true              # 对称 GLCM
+      normalize: true              # 归一化
+    lbp:
+      radius_list: [1, 2, 3]       # LBP 半径
+      n_points_list: [8, 16, 24]   # 每半径采样点数
+      method: "uniform"            # uniform | default | var
+    gabor:
+      orientations: 8              # 滤波器方向数（均匀分布 0~π）
+      scales: [3, 5, 7]            # 滤波器核尺寸（像素）
+      frequencies: [0.1, 0.3, 0.5] # 中心频率（周期/像素）
+    cv_window: 32                  # 变异系数（CV）滑动窗口大小（像素）
+    local_entropy_window: 9        # 局部熵窗口大小
+
+  # --- 缺陷检测 ---
+  defects:
+    oxidation:
+      enabled: true
+      h_range: [10, 30]            # 氧化色相范围（背离金色铜面）
+      s_min: 25                    # 饱和度下界（氧化斑饱和度较低）
+      v_min: 35                    # 明度下界
+      area_min_px: 50              # 最小连通域面积（像素）
+    embedding:
+      enabled: true
+      kernel_size: [15, 15]        # Top-hat 结构元尺寸
+      threshold_binary: 30          # 二值化阈值
+      area_min_px: 5               # 最小磨料斑点面积（像素）
+    unroughened:
+      enabled: true
+      energy_threshold: 0.12       # GLCM 能量阈值（低于此值视为未粗化）
+      area_min_px: 100             # 最小未粗化区域面积（像素）
+
+  # --- 缺陷分类 ---
+  classifier:
+    type: "svm"                    # svm | mobilenet
+    svm_model: "models/svm_classifier.pkl"
+    mobilenet_model: "models/mobilenet_classifier.pt"
+    feature_dim: 128               # 输入特征维度
+    confidence_threshold: 0.5
+
+  # --- 质量评估 ---
+  quality:
+    roughness_cv_max: 0.35         # 粗糙度 CV 容忍上限
+    direction_consistency_min: 0.6 # 锚纹方向一致性下限 (0~1)
+    oxidation_max_pct: 5.0         # 氧化斑面积百分比容忍上限
+    embedding_max_count: 10        # 磨料嵌入计数容忍上限
+    unroughened_max_pct: 3.0       # 未粗化面积百分比容忍上限
+    ok_score_threshold: 60         # OK/NG 判定分数阈值（0~100）
+
+# ----------------------------------------------------------------------------
+# 输出设置
+# ----------------------------------------------------------------------------
+output:
+  save_result_image: true          # 是否保存标注结果图
+  save_heatmap: true               # 是否保存热力图
+  result_dir: "results"            # 结果输出目录
+  database: "sqlite:///data/inspection.db"  # 数据库连接字符串
+  log_level: "INFO"                # 日志级别
+
+# ----------------------------------------------------------------------------
+# PLC 通信
+# ----------------------------------------------------------------------------
+plc:
+  enabled: false
+  protocol: "modbus_rtu"           # modbus_rtu | modbus_tcp
+  port: "COM1"                     # 串口号（RTU）
+  host: "192.168.1.100"            # IP 地址（TCP）
+  tcp_port: 502                    # TCP 端口
+  baudrate: 9600                   # 波特率（RTU）
+  slave_id: 1                      # 从站地址
+  timeout_ms: 1000                 # 超时（毫秒）
+  coil_ok: 0                       # OK 信号线圈地址
+  coil_ng: 1                       # NG 信号线圈地址
+  register_quality: 100            # 质量分数保持寄存器地址
+
+# ----------------------------------------------------------------------------
+# 工业相机设置
+# ----------------------------------------------------------------------------
+camera:
+  driver: "opencv"                 # opencv | harvesters (GenICam)
+  width: 2448                      # 图像宽度（像素）
+  height: 2048                     # 图像高度（像素）
+  exposure_us: 5000                # 曝光时间（微秒）
+  gain: 1.0                        # 模拟增益
+  pixel_format: "Mono8"            # 像素格式
+  trigger_source: "Line0"          # 触发源（仅外部触发模式）
+
+# ----------------------------------------------------------------------------
+# 数据处理
+# ----------------------------------------------------------------------------
+data_processing:
+  moving_average_window: 10        # 指标滑动平均窗口
+  alert_threshold_consecutive: 3   # 连续 NG 达此数则触发预警
+  spc_control_limit: 3.0           # SPC 控制限 σ 倍数

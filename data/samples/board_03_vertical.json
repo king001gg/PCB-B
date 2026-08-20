@@ -1,0 +1,63 @@
+{
+  "image": "board_03_vertical.jpg",
+  "image_size": {
+    "width": 800,
+    "height": 600
+  },
+  "detections": [
+    {
+      "bbox": [
+        384,
+        384,
+        416,
+        416
+      ],
+      "class_name": "missing_hole"
+    },
+    {
+      "bbox": [
+        74,
+        217,
+        86,
+        229
+      ],
+      "class_name": "mouse_bite"
+    },
+    {
+      "bbox": [
+        273,
+        224,
+        287,
+        238
+      ],
+      "class_name": "open_circuit"
+    },
+    {
+      "bbox": [
+        540,
+        290,
+        560,
+        310
+      ],
+      "class_name": "short"
+    },
+    {
+      "bbox": [
+        522,
+        249,
+        535,
+        262
+      ],
+      "class_name": "spur"
+    },
+    {
+      "bbox": [
+        507,
+        368,
+        541,
+        402
+      ],
+      "class_name": "spurious_copper"
+    }
+  ]
+}
