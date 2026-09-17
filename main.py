@@ -89,11 +89,52 @@ def run_gui(config_path: str):
     sys.exit(app.exec())
 
 
+class _ConsoleSafeStream:
+    """给控制台输出套一层字符降级。
+
+    Windows 控制台的默认编码是 GBK，而检测报告里的 ✓ ✗ ⚠ ² 都不在 GBK
+    字符集里。直接 print 会抛 UnicodeEncodeError —— 之前 CLI 模式第一条
+    输出 `report.summary()` 就崩，整个命令行入口不可用。
+
+    这里在写出前把已知符号换成 ASCII 等价物，换不掉的再交给
+    errors="replace" 兜底，保证结果一定打得出来。
+    只包 CLI 路径：GUI 与写出的报告文件仍用原字符，不受影响。
+    """
+
+    _FALLBACKS = (
+        ("✓", "[v]"), ("✗", "[x]"), ("⚠", "[!]"), ("✅", "[v]"),
+        ("❌", "[x]"), ("²", "2"), ("→", "->"), ("×", "x"),
+    )
+
+    def __init__(self, stream):
+        self._stream = stream
+        # 控制台编码；取不到时按 UTF-8 处理（多数 CI/管道场景）
+        self.encoding = getattr(stream, "encoding", None) or "utf-8"
+
+    def write(self, text: str):
+        try:
+            text.encode(self.encoding)
+        except (UnicodeEncodeError, LookupError):
+            for bad, good in self._FALLBACKS:
+                text = text.replace(bad, good)
+            text = text.encode(self.encoding, "replace") \
+                       .decode(self.encoding, "replace")
+        return self._stream.write(text)
+
+    def __getattr__(self, name):
+        # flush / isatty / fileno 等一律透传给真正的流
+        return getattr(self._stream, name)
+
+
 def run_cli(image_path: str, config_path: str):
     """命令行模式：对单张图像执行检测并输出结果。"""
     import cv2
     import yaml
     import numpy as np
+
+    # 见 _ConsoleSafeStream 的说明：不加这层，GBK 控制台上第一条输出就崩
+    if not isinstance(sys.stdout, _ConsoleSafeStream):
+        sys.stdout = _ConsoleSafeStream(sys.stdout)
 
     from core.preprocessing import Preprocessor
     from core.texture import TextureAnalyzer
@@ -132,13 +173,13 @@ def run_cli(image_path: str, config_path: str):
     if defects:
         print(f"\n缺陷列表 ({len(defects)} 处):")
         for d in defects:
-            print(f"  [{d.type}] 面积={d.area_mm2:.4f}mm² "
+            print(f"  [{d.type}] 面积={d.area_mm2:.4f}mm2 "
                   f"位置=({d.bbox[0]},{d.bbox[1]}→{d.bbox[2]},{d.bbox[3]}) "
                   f"严重度={d.severity:.2f}")
     if report.warnings:
         print("\n预警:")
         for w in report.warnings:
-            print(f"  ⚠ {w}")
+            print(f"  [!] {w}")
 
     # 工艺参数监测（8 级口径 GLCM，与上面的 texture_vec 是两套独立口径）。
     # 注意用 image_rgb 而非 preprocessor 的输出：Retinex + CLAHE 会改变灰度
@@ -155,7 +196,7 @@ def run_cli(image_path: str, config_path: str):
                 print(f"  {label}: {getattr(features, key):.4f}")
             print(f"  工艺判定: {verdict.level}")
             if verdict.alarm:
-                print("  报警状态: ⚠ 报警")
+                print("  报警状态: [!] 报警")
             print(f"  智能维护建议: {verdict.suggestion}")
         except Exception as e:
             print(f"\n工艺参数监测失败，已跳过: {e}")

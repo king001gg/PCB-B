@@ -506,4 +506,4 @@ def create_classifier(config: dict) -> DefectClassifier:
     elif clf_type == "mobilenet":
         return MobileNetClassifier(config)
     else:
-        raise ValueError(f"不支持的分���器类型: {clf_type}。可选: svm, mobilenet")
+        raise ValueError(f"不支持的分类器类型: {clf_type}。可选: svm, mobilenet")

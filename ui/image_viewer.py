@@ -20,6 +20,16 @@ from PySide6.QtCore import Qt, QPoint, QRectF
 from core.defects import Defect
 
 
+#: 窄按钮（缩放 +/-）专用样式。
+#: 主窗口的全局样式表给 QPushButton 设了 ``padding: 6px 14px``，左右合计
+#: 28px。这两个按钮固定宽 30px，扣掉 padding 和 1px 边框后可用内容宽为 0，
+#: 文字被整个裁掉 —— 界面上就是两个空白按钮。
+#: 这里只把**水平** padding 归零，垂直方向保持 6px：改成 ``padding: 0``
+#: 也会修好文字，但按钮高度会从 26px 掉到 14px，和旁边的「适应」「1:1」
+#: 参差不齐。边框/底色/圆角仍由全局样式表提供。
+_NARROW_BTN_STYLE = "QPushButton { padding: 6px 0; font-weight: bold; }"
+
+
 class ImageViewer(QWidget):
     """带缩放和叠加的图像显示组件。
 
@@ -57,11 +67,13 @@ class ImageViewer(QWidget):
         toolbar = QHBoxLayout()
         self.zoom_in_btn = QPushButton("+")
         self.zoom_in_btn.setFixedWidth(30)
+        self.zoom_in_btn.setStyleSheet(_NARROW_BTN_STYLE)
         self.zoom_in_btn.clicked.connect(lambda: self.zoom(1.25))
         toolbar.addWidget(self.zoom_in_btn)
 
         self.zoom_out_btn = QPushButton("-")
         self.zoom_out_btn.setFixedWidth(30)
+        self.zoom_out_btn.setStyleSheet(_NARROW_BTN_STYLE)
         self.zoom_out_btn.clicked.connect(lambda: self.zoom(0.8))
         toolbar.addWidget(self.zoom_out_btn)
 
