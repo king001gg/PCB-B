@@ -23,11 +23,12 @@ from hardware.camera import (
 
 
 #: (显示名, 驱动名, 说明)。驱动名会写进 config 的 camera.driver。
+#: mvs 排第一 —— 它是默认驱动，也是下拉在数据匹配不上时的兜底项。
 _DRIVERS = (
+    ("mvs — 海康官方 SDK（默认）", "mvs",
+     "海康 MV 系列走 MvCameraControl.dll。支持曝光/增益/触发等全部参数。"),
     ("opencv — USB/网口摄像头", "opencv",
      "走 OpenCV VideoCapture。免驱 UVC 相机或笔记本摄像头用这个。"),
-    ("mvs — 海康官方 SDK（推荐）", "mvs",
-     "海康 MV 系列走 MvCameraControl.dll。支持曝光/增益/触发等全部参数。"),
     ("harvesters — 通用 GenICam", "harvesters",
      "通用 GenTL 路线，适配 Basler / 大恒等。海康相机不要选：\n"
      "海康的 producer 不符合规范的 UTF-8 要求，会取到全黑帧。"),
@@ -67,7 +68,7 @@ class CameraDialog(QDialog):
             self.driver_combo.setItemData(
                 self.driver_combo.count() - 1, tip, Qt.ToolTipRole)
         self._select_by_data(self.driver_combo,
-                             self.camera_config.get("driver", "opencv"))
+                             self.camera_config.get("driver", "mvs"))
         basic_form.addRow("驱动:", self.driver_combo)
 
         self.width_spin = QSpinBox()

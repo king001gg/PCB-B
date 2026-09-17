@@ -154,7 +154,7 @@ plc:
 # 工业相机设置
 # ----------------------------------------------------------------------------
 camera:
-  driver: "opencv"                 # opencv | mvs（海康官方 SDK）| harvesters（通用 GenICam）
+  driver: "mvs"                    # mvs（海康官方 SDK，默认）| opencv | harvesters（通用 GenICam）
   width: 2448                      # 图像宽度（像素）
   height: 2048                     # 图像高度（像素）
   exposure_us: 5000                # 曝光时间（微秒）

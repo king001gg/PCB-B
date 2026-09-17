@@ -1148,10 +1148,14 @@ def create_camera(config: dict) -> CameraBase:
     """根据配置创建对应的相机实例。
 
     配置键 camera.driver:
+        - "mvs" / "mvsdk"                       → MvsCamera（海康官方 SDK，默认）
         - "opencv"                              → OpenCVCamera
-        - "mvs" / "mvsdk"                       → MvsCamera（海康官方 SDK，推荐）
         - "harvesters" / "genicam" /
           "hikvision" / "hikrobot"              → GenICamCamera（通用 GenTL）
+
+    未配置时按 mvs 处理。构造本身不加载 SDK —— MvsCamera 只在 open() 里
+    才去找 MvCameraControl.dll，所以没装 MVS 的机器也能正常启动，
+    失败点推迟到真正打开相机时，并带着 last_error 的具体原因。
 
     Args:
         config: 完整配置字典。
@@ -1159,7 +1163,7 @@ def create_camera(config: dict) -> CameraBase:
     Returns:
         CameraBase 实例（尚未 open()）。
     """
-    driver = str(config.get("camera", {}).get("driver", "opencv")).lower()
+    driver = str(config.get("camera", {}).get("driver", "mvs")).lower()
 
     if driver in MVS_SDK_DRIVER_ALIASES:
         # 延迟导入：没装 MVS 的机器上不应因为 import 就失败
