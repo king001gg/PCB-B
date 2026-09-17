@@ -8,8 +8,8 @@
 system:
   mode: "offline"          # online（相机实时） | offline（文件加载）
   image_dir: "data/samples" # 离线模式下的图像目录
-  camera_id: 0             # 在线模式下的相机编号
-  trigger_mode: "manual"   # manual（手动触发） | external（外部信号触发）
+  # 相机编号与触发模式已统一收进 camera 节（camera.device.index /
+  # camera.trigger），此处不再保留 —— 两处配置同一件事只会互相打架。
   resolution_mm_per_pixel: 0.01   # 图像空间分辨率
   board_width_mm: 200             # PCB 板宽度（用于面积百分比计算）
   board_height_mm: 150            # PCB 板高度
@@ -154,13 +154,21 @@ plc:
 # 工业相机设置
 # ----------------------------------------------------------------------------
 camera:
-  driver: "opencv"                 # opencv | harvesters (GenICam)
+  driver: "opencv"                 # opencv | mvs（海康官方 SDK）| harvesters（通用 GenICam）
   width: 2448                      # 图像宽度（像素）
   height: 2048                     # 图像高度（像素）
   exposure_us: 5000                # 曝光时间（微秒）
   gain: 1.0                        # 模拟增益
-  pixel_format: "Mono8"            # 像素格式
-  trigger_source: "Line0"          # 触发源（仅外部触发模式）
+  pixel_format: "Mono8"            # 像素格式。Mono8/Mono10/Mono12/RGB8/BGR8，
+                                   # 也可直接填 SDK 枚举名（如 BayerRG8）
+  device:
+    index: 0                       # opencv：摄像头编号；mvs/harvesters：按枚举顺序选
+    serial_number: ""              # 多台相机时按序列号绑定，留空 = 第一台。
+                                   # 网口插拔顺序会变，靠「第一台」会拍错工位
+  trigger:
+    mode: "continuous"             # continuous（连续采集）| software（软触发）| external（外部信号）
+    source: "Line0"                # 触发源，仅 external 时有效
+  acquire_timeout_ms: 2000         # 单次取帧超时（毫秒）
 
 # ----------------------------------------------------------------------------
 # 数据处理

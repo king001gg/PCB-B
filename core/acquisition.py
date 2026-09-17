@@ -189,10 +189,16 @@ class CameraAcquisition(ImageAcquisition):
         if image is None:
             return None
 
+        # 设备编号与 hardware/camera.py 保持一致：先读 camera.device.index，
+        # 再回退到旧键 system.camera_id。
+        camera_cfg = self.config.get("camera", {}) or {}
+        cam_index = (camera_cfg.get("device", {}) or {}).get(
+            "index", self.config.get("system", {}).get("camera_id", 0)
+        )
         frame = ImageFrame(
             image=image,
             timestamp=datetime.now().isoformat(),
-            source_id=f"camera_{self.config.get('system', {}).get('camera_id', 0)}",
+            source_id=f"camera_{cam_index}",
             frame_index=self._frame_counter,
         )
 

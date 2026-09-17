@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QDockWidget,
 )
 from PySide6.QtGui import QPixmap, QImage, QDragEnterEvent, QDropEvent, QAction
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 
 # 核心模块
 from core.preprocessing import Preprocessor
@@ -46,7 +46,10 @@ from ui.stats_panel import StatsPanel
 from ui.process_panel import ProcessPanel
 from ui.config_dialog import ConfigDialog
 from ui.camera_dialog import CameraDialog
+from ui.camera_worker import CameraGrabWorker
 from ui.workers import DetectionWorker
+
+from hardware.camera import create_camera
 
 # 工具
 from utils.validators import validate_config
@@ -447,10 +450,12 @@ class MainWindow(QMainWindow):
 
     def open_camera_dialog(self):
         """打开相机设置对话框。"""
-        camera_cfg = self.config.get("camera", {})
-        dialog = CameraDialog(camera_cfg, self)
+        dialog = CameraDialog(self.config.get("camera", {}), self)
         if dialog.exec():
-            self.config["camera"] = camera_cfg
+            # 必须取 dialog.camera_config：对话框内部对传入的 dict 做了 copy，
+            # 改的是它自己那份。早先这里写回的是传进去的原对象，等于没改，
+            # 相机参数点「确定」后全部丢失。
+            self.config["camera"] = dialog.camera_config
             self.status_bar.showMessage("相机设置已更新")
 
     def export_report(self):
@@ -586,34 +591,54 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _start_live(self):
-        """启动相机实时预览。"""
-        self.live_timer = QTimer()
-        self.live_timer.timeout.connect(self._live_grab)
+        """启动相机实时预览。
+
+        取流放在 ``CameraGrabWorker`` 线程里：GenICam 的 fetch() 是带超时的
+        阻塞调用，留在 GUI 线程会直接冻住界面；OpenCV 的 read() 在相机拔线
+        或带宽不足时同样会长时间阻塞。相机由工作线程自己 open()/release()，
+        GUI 线程不碰设备句柄。
+        """
+        # 先收掉可能还在跑的上一轮，否则两个线程会抢同一个相机。
+        # 只能用 _teardown_worker()，不能用 _stop_live() —— 后者会复位
+        # _live_mode 和按钮文案，而 toggle_live_mode 刚把它们设成「预览中」。
+        self._teardown_worker()
+
         try:
-            import cv2
-            self._cap = cv2.VideoCapture(0)
-            if not self._cap.isOpened():
-                raise RuntimeError("无法打开相机")
-            self.live_timer.start(100)  # 100ms 间隔
-            # 预览期间禁用离线检测：两条路径都会写工艺面板，同时跑会让数值来回跳
-            self.detect_btn.setEnabled(False)
-            self.status_bar.showMessage('实时预览模式 — 按"停止预览"退出')
+            camera = create_camera(self.config)
         except Exception as e:
-            self._live_mode = False
-            self.live_btn.setChecked(False)
-            self.live_btn.setText("📷 实时预览")
-            # 相机没开起来就等于没进预览模式，必须保持检测按钮可用，
-            # 否则用户既不能预览也不能检测
-            self.detect_btn.setEnabled(self.current_raw_image is not None)
-            QMessageBox.critical(self, "相机错误", str(e))
+            self._live_failed(f"相机初始化失败：{e}")
+            return
+
+        self.camera_worker = CameraGrabWorker(camera)
+        self.camera_worker.frame_ready.connect(self._on_frame)
+        self.camera_worker.opened.connect(self._on_live_opened)
+        self.camera_worker.failed.connect(self._live_failed)
+        self.camera_worker.stats.connect(self._on_live_stats)
+        self.camera_worker.start()
+
+        # 相机是异步打开的，这里先按「已进入预览」处理；真失败会走
+        # _live_failed 把状态回滚。检测按钮在 _on_live_opened 里禁用。
+        self.status_bar.showMessage("正在打开相机…")
+
+    def _teardown_worker(self) -> None:
+        """停掉采集线程并释放相机，不动任何界面状态。"""
+        worker = getattr(self, "camera_worker", None)
+        if worker is None:
+            return
+        worker.stop()
+        # acquire() 可能正阻塞在超时等待中，最坏要等一个超时周期
+        if not worker.wait(3000):
+            # 线程没退就强杀：继续留着会与下一次 open() 抢设备
+            print("[Camera] 采集线程 3 秒内未退出，强制终止")
+            worker.terminate()
+            worker.wait(1000)
+        worker.deleteLater()
+        self.camera_worker = None
 
     def _stop_live(self):
         """停止实时预览。"""
-        if hasattr(self, "live_timer"):
-            self.live_timer.stop()
-        if hasattr(self, "_cap") and self._cap is not None:
-            self._cap.release()
-            self._cap = None
+        self._teardown_worker()
+
         # 菜单里的「离线模式」也会走到这里，故一并复位预览状态与按钮文案，
         # 避免出现按钮显示「停止预览」但实际已停止的不一致
         self._live_mode = False
@@ -622,27 +647,56 @@ class MainWindow(QMainWindow):
         self.detect_btn.setEnabled(self.current_raw_image is not None)
         self.status_bar.showMessage("实时预览已停止")
 
-    def _live_grab(self):
-        """抓取实时帧。"""
-        if hasattr(self, "_cap") and self._cap is not None:
-            ret, frame = self._cap.read()
-            if ret:
-                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                self.current_raw_image = frame_rgb
-                self.image_viewer.set_image(frame_rgb)
+    def _on_live_opened(self):
+        """相机打开成功。"""
+        # 预览期间禁用离线检测：两条路径都会写工艺面板，同时跑会让数值来回跳
+        self.detect_btn.setEnabled(False)
+        self.status_bar.showMessage('实时预览模式 — 按"停止预览"退出')
 
-                # 工艺参数监测走轻量路径：只算 8 级 GLCM（约 2ms）。
-                # 不跑 Gabor / SVM / 缺陷检测 —— 那部分单帧需数秒，无法实时。
-                # 必须传 frame_rgb（RGB）而非 frame（BGR）：离线路径拿到的是 RGB，
-                # 两条路径的颜色顺序不一致会让灰度转换权重对调，同一块板算出不同
-                # 的特征值，破坏 R3 的一致性要求。
-                if self.process_monitor.enabled:
-                    try:
-                        features = self.process_monitor.extractor.compute(frame_rgb)
-                        self._refresh_process_panel(features)
-                    except Exception:
-                        # 单帧计算失败不应中断预览
-                        pass
+    def _live_failed(self, message: str):
+        """相机打开失败或连续取帧失败：回滚到未预览状态。
+
+        相机没开起来就等于没进预览模式，必须保持检测按钮可用，
+        否则用户既不能预览也不能检测。
+        """
+        self._stop_live()
+        QMessageBox.critical(self, "相机错误", message)
+
+    def _on_live_stats(self, fps: float, failures: int):
+        """刷新状态栏的帧率显示。"""
+        if not self._live_mode:
+            return
+        text = f"实时预览 — {fps:.1f} FPS"
+        if failures:
+            text += f"（取帧失败 {failures} 次）"
+        self.status_bar.showMessage(text)
+
+    def _on_frame(self, frame_rgb: np.ndarray):
+        """处理工作线程投来的一帧（已在工作线程内转成 RGB）。
+
+        GLCM 计算完必须解除工作线程的忙标志，否则预览只出一帧就卡住 ——
+        用 finally 保证异常路径也会解除。
+        """
+        try:
+            self.current_raw_image = frame_rgb
+            self.image_viewer.set_image(frame_rgb)
+
+            # 工艺参数监测走轻量路径：只算 8 级 GLCM（约 2ms）。
+            # 不跑 Gabor / SVM / 缺陷检测 —— 那部分单帧需数秒，无法实时。
+            # 这里拿到的是 RGB（工作线程边界上转好的），与离线路径一致。
+            # 两条路径颜色顺序不一致会让灰度转换权重对调，同一块板算出不同
+            # 的特征值，破坏 R3 的一致性要求。
+            if self.process_monitor.enabled:
+                try:
+                    features = self.process_monitor.extractor.compute(frame_rgb)
+                    self._refresh_process_panel(features)
+                except Exception:
+                    # 单帧计算失败不应中断预览
+                    pass
+        finally:
+            worker = getattr(self, "camera_worker", None)
+            if worker is not None:
+                worker.notify_gui_busy(False)
 
     # ------------------------------------------------------------------
     # 模式切换
@@ -664,6 +718,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # 其他
     # ------------------------------------------------------------------
+
+    def closeEvent(self, event):
+        """关窗前先停掉采集线程。
+
+        不这么做的话 Qt 会析构一个仍在运行的 QThread，运气好是
+        「QThread: Destroyed while thread is still running」加内存泄漏，
+        运气不好直接崩在退出路径上。
+        """
+        self._teardown_worker()
+        super().closeEvent(event)
 
     def _show_about(self):
         QMessageBox.about(
