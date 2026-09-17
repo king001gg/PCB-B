@@ -19,3 +19,7 @@ results/
 
 # 数据库文件
 data/*.db
+
+# 测试覆盖率数据（pytest-cov 运行产物）
+.coverage
+.coverage.*
