@@ -37,11 +37,13 @@ from core.texture import TextureAnalyzer
 from core.defects import DefectDetector
 from core.quality import QualityAssessor, QualityReport
 from core.pipeline import InspectionResult
+from core.process_monitor import ProcessMonitor
 
 # UI 组件
 from ui.image_viewer import ImageViewer
 from ui.heatmap_widget import HeatmapWidget
 from ui.stats_panel import StatsPanel
+from ui.process_panel import ProcessPanel
 from ui.config_dialog import ConfigDialog
 from ui.camera_dialog import CameraDialog
 from ui.workers import DetectionWorker
@@ -104,6 +106,7 @@ class MainWindow(QMainWindow):
         self.texture_analyzer = TextureAnalyzer(self.config)
         self.defect_detector = DefectDetector(self.config)
         self.quality_assessor = QualityAssessor(self.config)
+        self.process_monitor = ProcessMonitor(self.config)
 
     def reload_config(self):
         """重新加载配置并更新所有模块。"""
@@ -290,6 +293,10 @@ class MainWindow(QMainWindow):
         self.stats_panel = StatsPanel()
         right_tabs.addTab(self.stats_panel, "统计")
 
+        # 工艺参数监测面板 —— 置于标签页上方，切换标签页时报警灯仍可见
+        self.process_panel = ProcessPanel()
+        right_layout.addWidget(self.process_panel)
+
         right_layout.addWidget(right_tabs)
         main_splitter.addWidget(right_panel)
 
@@ -366,6 +373,7 @@ class MainWindow(QMainWindow):
             defect_detector=self.defect_detector,
             quality_assessor=self.quality_assessor,
             board_id=board_id,
+            process_monitor=self.process_monitor,
         )
         self.thread.finished.connect(self._on_detection_finished)
         self.thread.progress.connect(self._on_progress)
@@ -385,6 +393,9 @@ class MainWindow(QMainWindow):
 
         # 更新图像显示（含缺陷标注）
         self.image_viewer.set_image(result.image)
+
+        # 更新工艺参数监测面板
+        self._refresh_process_panel(result.process_features)
 
         # 更新结果面板
         self._update_result_panel(result)
@@ -414,13 +425,17 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "检测错误", error_msg)
 
     def toggle_live_mode(self):
-        """切换实时预览模式。"""
+        """切换实时预览模式。
+
+        实时预览期间禁用「开始检测」：离线路径与在线路径都会写工艺面板，
+        同时运行会导致数值来回跳。按钮的启停由 _start_live / _stop_live
+        统一负责 —— 菜单里的「离线模式」也会调 _stop_live，集中在一处才不会漏。
+        """
         self._live_mode = self.live_btn.isChecked()
         if self._live_mode:
             self.live_btn.setText("⏹ 停止预览")
             self._start_live()
         else:
-            self.live_btn.setText("📷 实时预览")
             self._stop_live()
 
     def open_config_dialog(self):
@@ -482,8 +497,27 @@ class MainWindow(QMainWindow):
         self.ok_ng_label.setText("等待检测...")
         for lbl in self.metric_labels.values():
             lbl.setText("--")
+        # 清空工艺面板，避免上一张图的报警状态残留
+        self.process_panel.reset()
 
         self.status_bar.showMessage(f"已加载: {os.path.basename(path)}")
+
+    def _refresh_process_panel(self, features) -> None:
+        """刷新工艺参数监测面板。
+
+        Args:
+            features: ProcessGLCMFeatures，为 None（未启用或计算失败）时跳过。
+        """
+        if features is None:
+            return
+        try:
+            self.process_panel.update_features(features)
+            self.process_panel.update_verdict(
+                self.process_monitor.evaluate(features)
+            )
+        except Exception as e:
+            # 面板刷新属辅助功能，失败不应中断检测流程
+            self.status_bar.showMessage(f"工艺面板刷新失败: {e}")
 
     def _update_result_panel(self, result: InspectionResult):
         """更新检测结果面板。"""
@@ -561,11 +595,16 @@ class MainWindow(QMainWindow):
             if not self._cap.isOpened():
                 raise RuntimeError("无法打开相机")
             self.live_timer.start(100)  # 100ms 间隔
+            # 预览期间禁用离线检测：两条路径都会写工艺面板，同时跑会让数值来回跳
+            self.detect_btn.setEnabled(False)
             self.status_bar.showMessage('实时预览模式 — 按"停止预览"退出')
         except Exception as e:
             self._live_mode = False
             self.live_btn.setChecked(False)
             self.live_btn.setText("📷 实时预览")
+            # 相机没开起来就等于没进预览模式，必须保持检测按钮可用，
+            # 否则用户既不能预览也不能检测
+            self.detect_btn.setEnabled(self.current_raw_image is not None)
             QMessageBox.critical(self, "相机错误", str(e))
 
     def _stop_live(self):
@@ -575,6 +614,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_cap") and self._cap is not None:
             self._cap.release()
             self._cap = None
+        # 菜单里的「离线模式」也会走到这里，故一并复位预览状态与按钮文案，
+        # 避免出现按钮显示「停止预览」但实际已停止的不一致
+        self._live_mode = False
+        self.live_btn.setChecked(False)   # clicked 信号，setChecked 不会递归触发
+        self.live_btn.setText("📷 实时预览")
+        self.detect_btn.setEnabled(self.current_raw_image is not None)
         self.status_bar.showMessage("实时预览已停止")
 
     def _live_grab(self):
@@ -585,6 +630,19 @@ class MainWindow(QMainWindow):
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 self.current_raw_image = frame_rgb
                 self.image_viewer.set_image(frame_rgb)
+
+                # 工艺参数监测走轻量路径：只算 8 级 GLCM（约 2ms）。
+                # 不跑 Gabor / SVM / 缺陷检测 —— 那部分单帧需数秒，无法实时。
+                # 必须传 frame_rgb（RGB）而非 frame（BGR）：离线路径拿到的是 RGB，
+                # 两条路径的颜色顺序不一致会让灰度转换权重对调，同一块板算出不同
+                # 的特征值，破坏 R3 的一致性要求。
+                if self.process_monitor.enabled:
+                    try:
+                        features = self.process_monitor.extractor.compute(frame_rgb)
+                        self._refresh_process_panel(features)
+                    except Exception:
+                        # 单帧计算失败不应中断预览
+                        pass
 
     # ------------------------------------------------------------------
     # 模式切换

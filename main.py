@@ -99,6 +99,7 @@ def run_cli(image_path: str, config_path: str):
     from core.texture import TextureAnalyzer
     from core.defects import DefectDetector
     from core.quality import QualityAssessor
+    from core.process_monitor import ProcessMonitor
 
     # 加载配置
     with open(config_path, "r", encoding="utf-8") as f:
@@ -138,6 +139,26 @@ def run_cli(image_path: str, config_path: str):
         print("\n预警:")
         for w in report.warnings:
             print(f"  ⚠ {w}")
+
+    # 工艺参数监测（8 级口径 GLCM，与上面的 texture_vec 是两套独立口径）。
+    # 注意用 image_rgb 而非 preprocessor 的输出：Retinex + CLAHE 会改变灰度
+    # 分布使特征漂移，详见 core/process_monitor.py 的 R2。
+    process_monitor = ProcessMonitor(config)
+    if process_monitor.enabled:
+        try:
+            features = process_monitor.extractor.compute(image_rgb)
+            verdict = process_monitor.evaluate(features)
+            print("\n工艺参数监测（实时分析数据）:")
+            for key, label in (("contrast", "对比度"), ("correlation", "相关性"),
+                               ("energy", "能量值"), ("dissimilarity", "差异性"),
+                               ("homogeneity", "同质性"), ("asm", "ASM值")):
+                print(f"  {label}: {getattr(features, key):.4f}")
+            print(f"  工艺判定: {verdict.level}")
+            if verdict.alarm:
+                print("  报警状态: ⚠ 报警")
+            print(f"  智能维护建议: {verdict.suggestion}")
+        except Exception as e:
+            print(f"\n工艺参数监测失败，已跳过: {e}")
 
     # 保存标注结果
     if config.get("output", {}).get("save_result_image", True):

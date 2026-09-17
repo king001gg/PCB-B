@@ -7,6 +7,7 @@ InspectionResult 是流水线的最终输出，包含所有检测信息。
 """
 
 import time
+import cv2
 import numpy as np
 from typing import List, Optional, Callable
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from core.texture import TextureAnalyzer, TextureFeatureVector
 from core.defects import DefectDetector, Defect
 from core.quality import QualityAssessor, QualityReport
 from core.acquisition import ImageAcquisition, create_acquisition
+from core.process_monitor import ProcessMonitor, ProcessGLCMFeatures
 
 
 # ============================================================================
@@ -41,6 +43,10 @@ class InspectionResult:
 
     # 特征向量（可选，用于分类器）
     texture_features: Optional[TextureFeatureVector] = None
+
+    # 工艺参数监测特征（8 级 GLCM，供工艺面板使用）
+    # 注意与 texture_features 是两套独立口径，不可混用，详见 core/process_monitor.py
+    process_features: Optional[ProcessGLCMFeatures] = None
 
     # 性能计时
     timings: dict = field(default_factory=dict)
@@ -85,6 +91,7 @@ class InspectionPipeline:
         self.texture_analyzer = TextureAnalyzer(config)
         self.defect_detector = DefectDetector(config)
         self.quality_assessor = QualityAssessor(config)
+        self.process_monitor = ProcessMonitor(config)
 
         # 进度回调
         self._progress_callbacks: List[Callable[[int, str], None]] = []
@@ -153,6 +160,19 @@ class InspectionPipeline:
         t1 = time.perf_counter()
         result.timings["texture"] = (t1 - t0) * 1000
         self._notify_progress(50, "纹理分析完成")
+
+        # --- 工艺参数监测（8 级口径，与上面的 256 级 GLCM 相互独立） ---
+        # 必须从原始 image 取灰度，不能用 result.gray —— 后者经过 Retinex + CLAHE，
+        # 会改变灰度分布使特征漂移，违反 core/process_monitor.py 的 R2 规则。
+        if self.process_monitor.enabled:
+            t0 = time.perf_counter()
+            try:
+                result.process_features = self.process_monitor.extractor.compute(image)
+            except Exception as e:
+                # 工艺监测是辅助功能，失败不应阻断主检测流程
+                result.process_features = None
+                print(f"警告: 工艺参数监测失败，已跳过: {e}")
+            result.timings["process_monitor"] = (time.perf_counter() - t0) * 1000
 
         # --- Phase 3: 缺陷检测 (50-75%) ---
         self._notify_progress(51, "缺陷检测开始")

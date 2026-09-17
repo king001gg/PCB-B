@@ -11,6 +11,7 @@ from core.texture import TextureAnalyzer
 from core.defects import DefectDetector, Defect
 from core.quality import QualityAssessor, QualityReport
 from core.pipeline import InspectionResult
+from core.process_monitor import ProcessMonitor
 
 
 class DetectionWorker(QThread):
@@ -37,6 +38,7 @@ class DetectionWorker(QThread):
         defect_detector: DefectDetector,
         quality_assessor: QualityAssessor,
         board_id: str = "",
+        process_monitor: ProcessMonitor = None,
     ):
         super().__init__()
         self.image = image
@@ -45,6 +47,7 @@ class DetectionWorker(QThread):
         self.defect_detector = defect_detector
         self.quality_assessor = quality_assessor
         self.board_id = board_id
+        self.process_monitor = process_monitor
 
     def run(self):
         try:
@@ -55,6 +58,17 @@ class DetectionWorker(QThread):
             # (2) 纹理分析
             self.progress.emit(30)
             texture_vec = self.texture_analyzer.analyze(gray)
+
+            # (2.5) 工艺参数监测（8 级口径，与上面的 256 级 GLCM 相互独立）
+            # 必须从原始 self.image 取灰度，不能用 gray —— 后者经过 Retinex + CLAHE，
+            # 会改变灰度分布使特征漂移，违反 core/process_monitor.py 的 R2 规则。
+            process_features = None
+            if self.process_monitor is not None and self.process_monitor.enabled:
+                try:
+                    process_features = self.process_monitor.extractor.compute(self.image)
+                except Exception:
+                    # 工艺监测是辅助功能，失败不应阻断主检测流程
+                    process_features = None
 
             # (3) CV 热力图
             self.progress.emit(50)
@@ -89,6 +103,7 @@ class DetectionWorker(QThread):
                 heatmap=heatmap,
                 ok_ng=report.ok_ng,
                 texture_features=texture_vec,
+                process_features=process_features,
             )
 
             self.progress.emit(100)

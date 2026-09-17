@@ -13,3 +13,9 @@ PCB_defect_detection/
 # Ultralytics cache / runs
 runs/
 **/predict*
+
+# 检测结果输出（output.result_dir，运行产物）
+results/
+
+# 数据库文件
+data/*.db
