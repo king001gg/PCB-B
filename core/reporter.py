@@ -90,6 +90,22 @@ class InspectionReport:
                 "max_cv": round(float(np.max(r.roughness_map)), 4),
             }
 
+        # 色度 / 饱和度：标量已在上面 "quality" 段里（QualityReport.to_dict），
+        # 这里补上越界区域的定位明细，与上面 "roughness" 分节的写法对齐。
+        # 只监测、不进总分 —— 不参与 "report" 段的评分与判定。
+        color = (q.detail or {}).get("color") if q else None
+        if color:
+            data["color"] = {
+                "available": color.get("available", False),
+                "note": color.get("note", ""),
+                "hue_mean_deg": color.get("hue_mean_deg"),
+                "hue_deviation_deg": color.get("hue_deviation_deg"),
+                "sat_mean": color.get("sat_mean"),
+                "oor_abs_pct": color.get("oor_abs_pct", 0.0),
+                "oor_adaptive_pct": color.get("oor_adaptive_pct", 0.0),
+                "regions": color.get("regions", []),
+            }
+
         return data
 
     def to_json(self, indent: int = 2) -> str:
@@ -118,6 +134,31 @@ class InspectionReport:
             f"  氧化斑面积:   {q.oxidation_percentage:.2f}%",
             f"  磨料嵌入:     {q.embedding_count} 个",
             f"  未粗化面积:   {q.unroughened_percentage:.2f}%",
+            "",
+            "--- 色度 / 饱和度（只监测，不进总分） ---",
+        ]
+
+        if not q.color_available:
+            lines.append("  未测: 灰度输入无色彩信息")
+        else:
+            if q.color_hue_mean_deg is None:
+                lines.append("  色相:         不可测（整板近中性）")
+            else:
+                dev = q.color_hue_deviation_deg
+                dev_txt = "--" if dev is None else f"{dev:.1f}°"
+                lines.append(
+                    f"  色度偏移:     {dev_txt} "
+                    f"(均值 {q.color_hue_mean_deg:.1f}°)"
+                )
+            sat_txt = "--" if q.color_sat_mean is None else f"{q.color_sat_mean:.1f}"
+            lines.append(f"  饱和度:       {sat_txt}")
+            lines.append(
+                f"  越界面积:     绝对 {q.color_oor_abs_pct:.2f}% / "
+                f"自适应 {q.color_oor_adaptive_pct:.2f}%"
+                f"（{q.color_oor_count} 处区域）"
+            )
+
+        lines += [
             "",
             f"--- 缺陷列表 ({len(r.defects)} 处) ---",
         ]

@@ -1075,7 +1075,9 @@ class TestMvsCameraInit:
         assert (camera.width, camera.height) == (2448, 2048)
         assert camera.exposure_us == 5000.0
         assert camera.gain == 1.0
-        assert camera.pixel_format == "Mono8"
+        # 由 Mono8 改为 BGR8：色度/饱和度指标需要彩色输入。选 BGR8 而不是
+        # RGB8，是因为 CameraBase 的契约就是 BGR，上层 _to_rgb 会再转成 RGB。
+        assert camera.pixel_format == "BGR8"
         assert camera.trigger_mode == "continuous"
         assert camera.trigger_source == "Line0"
         assert camera.device_serial == ""
@@ -1583,7 +1585,10 @@ class TestApplyParams:
         assert sdk.state.set_calls() == [
             ("SetIntValue", "Width", 2448),
             ("SetIntValue", "Height", 2048),
-            ("SetEnumValueByString", "PixelFormat", "Mono8"),
+            # 配置里写的是 BGR8，落到 SDK 时经 _PIXEL_FORMAT_ALIASES 变成
+            # BGR8_Packed。少了这一步 SDK 会返回失败、且只打一行警告，
+            # 表现为「选了彩色却是黑白」。
+            ("SetEnumValueByString", "PixelFormat", "BGR8_Packed"),
             ("SetEnumValueByString", "ExposureAuto", "Off"),
             ("SetFloatValue", "ExposureTime", 5000.0),
             ("SetEnumValueByString", "GainAuto", "Off"),

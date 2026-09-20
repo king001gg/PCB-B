@@ -28,6 +28,13 @@ class InspectionRecord:
         result_image_path: str = "",
         heatmap_path: str = "",
         inspection_time: str = None,
+        color_available: bool = False,
+        color_hue_mean_deg: float = None,
+        color_hue_deviation_deg: float = None,
+        color_sat_mean: float = None,
+        color_oor_abs_pct: float = 0.0,
+        color_oor_adaptive_pct: float = 0.0,
+        color_oor_count: int = 0,
     ):
         self.board_id = board_id
         self.overall_score = overall_score
@@ -44,6 +51,15 @@ class InspectionRecord:
         self.result_image_path = result_image_path
         self.heatmap_path = heatmap_path
         self.inspection_time = inspection_time or datetime.now().isoformat()
+        # 色度 / 饱和度：只监测、不进总分。色相类可为 None（未测或不可测），
+        # 落库就是 NULL —— 不能写成 0，0 会被读成「色度零偏移」即满分。
+        self.color_available = color_available
+        self.color_hue_mean_deg = color_hue_mean_deg
+        self.color_hue_deviation_deg = color_hue_deviation_deg
+        self.color_sat_mean = color_sat_mean
+        self.color_oor_abs_pct = color_oor_abs_pct
+        self.color_oor_adaptive_pct = color_oor_adaptive_pct
+        self.color_oor_count = color_oor_count
 
     def to_dict(self) -> dict:
         return {
@@ -62,6 +78,14 @@ class InspectionRecord:
             "result_image_path": self.result_image_path,
             "heatmap_path": self.heatmap_path,
             "inspection_time": self.inspection_time,
+            # --- 色度 / 饱和度，追加在末尾（前 15 列位置不变） ---
+            "color_available": self.color_available,
+            "color_hue_mean_deg": self.color_hue_mean_deg,
+            "color_hue_deviation_deg": self.color_hue_deviation_deg,
+            "color_sat_mean": self.color_sat_mean,
+            "color_oor_abs_pct": self.color_oor_abs_pct,
+            "color_oor_adaptive_pct": self.color_oor_adaptive_pct,
+            "color_oor_count": self.color_oor_count,
         }
 
     @classmethod
@@ -85,6 +109,17 @@ class InspectionRecord:
             result_image_path=result_image_path,
             heatmap_path=heatmap_path,
             inspection_time=report.timestamp,
+            color_available=getattr(report, "color_available", False),
+            color_hue_mean_deg=getattr(report, "color_hue_mean_deg", None),
+            color_hue_deviation_deg=getattr(
+                report, "color_hue_deviation_deg", None
+            ),
+            color_sat_mean=getattr(report, "color_sat_mean", None),
+            color_oor_abs_pct=getattr(report, "color_oor_abs_pct", 0.0),
+            color_oor_adaptive_pct=getattr(
+                report, "color_oor_adaptive_pct", 0.0
+            ),
+            color_oor_count=getattr(report, "color_oor_count", 0),
         )
 
 

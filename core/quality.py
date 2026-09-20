@@ -13,6 +13,10 @@
     (3) 氧化斑面积比（oxidation_percentage）
     (4) 磨料嵌入计数（embedding_count）
     (5) 未粗化面积比（unroughened_percentage）
+
+以上五维按 ``weights`` 加权成总分。另有一组**只监测、不入总分、不影响 OK/NG**
+的色度 / 饱和度指标（``color_*`` 字段，来自 core.color.ColorAnalyzer），
+独立放在 ``detail["color"]`` 命名空间里。
 """
 
 import numpy as np
@@ -21,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from core.defects import Defect
+from core.color import ColorFeatures
 
 
 # ============================================================================
@@ -31,7 +36,13 @@ from core.defects import Defect
 class QualityReport:
     """喷砂表面质量评估报告。
 
-    包含所有五维度的评分和最终 OK/NG 判定。
+    包含五维度的加权评分和最终 OK/NG 判定，外加一组**只监测、不入总分**的
+    色度 / 饱和度指标（``color_*`` 字段）。
+
+    色度类字段与总分无关：不进 ``weights``、不进 ``detail["scores"]``，因而不
+    影响 OK/NG。第一版刻意如此——``weights`` 五项精确加和 1.0，加维度必然重排
+    权重、改动既有样本总分，属于必须重回标定的动作。详见 core/color.py。
+
     提供序列化方法用于存入数据库和导出报表。
     """
 
@@ -47,6 +58,16 @@ class QualityReport:
     embedding_count: int = 0              # 磨料嵌入颗粒数
     unroughened_percentage: float = 0.0   # 未粗化区域面积百分比
 
+    # 色度 / 饱和度（监测用，不进总分）。色相类为 Optional：有效像素不足时是
+    # None 而不是 0——0 会被读成"色度零偏移"即满分。
+    color_available: bool = False         # 是否拿到了色彩量（灰度输入为 False）
+    color_hue_mean_deg: Optional[float] = None      # 圆均值色相（度）
+    color_hue_deviation_deg: Optional[float] = None  # 与绝对基线的环形距离
+    color_sat_mean: Optional[float] = None          # 平均饱和度（0–255）
+    color_oor_abs_pct: float = 0.0        # 绝对判据越界面积占比
+    color_oor_adaptive_pct: float = 0.0   # 自适应判据越界面积占比
+    color_oor_count: int = 0              # 越界区域条数（两套判据之和）
+
     # 元数据
     warnings: List[str] = field(default_factory=list)
     detail: dict = field(default_factory=dict)
@@ -56,7 +77,14 @@ class QualityReport:
     board_id: str = ""
 
     def to_dict(self) -> dict:
-        """序列化为字典（用于 JSON 输出或数据库存储）。"""
+        """序列化为字典（用于 JSON 输出或数据库存储）。
+
+        前 11 个键是既有的，位置与含义保持不变；``color_*`` 7 个键**追加在
+        末尾**，避免下游按列号解析的脚本静默错位。
+        """
+        def _r(v, n):
+            return None if v is None else round(v, n)
+
         return {
             "overall_score": self.overall_score,
             "ok_ng": self.ok_ng,
@@ -69,6 +97,14 @@ class QualityReport:
             "warnings": self.warnings,
             "timestamp": self.timestamp,
             "board_id": self.board_id,
+            # --- 以下为色度 / 饱和度，追加在末尾 ---
+            "color_available": self.color_available,
+            "color_hue_mean_deg": _r(self.color_hue_mean_deg, 2),
+            "color_hue_deviation_deg": _r(self.color_hue_deviation_deg, 2),
+            "color_sat_mean": _r(self.color_sat_mean, 2),
+            "color_oor_abs_pct": round(self.color_oor_abs_pct, 4),
+            "color_oor_adaptive_pct": round(self.color_oor_adaptive_pct, 4),
+            "color_oor_count": self.color_oor_count,
         }
 
     def summary(self) -> str:
@@ -148,6 +184,7 @@ class QualityAssessor:
         cv_heatmap: Optional[np.ndarray] = None,
         direction_consistency: Optional[float] = None,
         board_id: str = "",
+        color_features: Optional["ColorFeatures"] = None,
     ) -> QualityReport:
         """运行完整的质量评估。
 
@@ -156,6 +193,8 @@ class QualityAssessor:
             cv_heatmap: CV 均匀性热力图 (H, W)。
             direction_consistency: Gabor DCI 值 [0, 1]。
             board_id: PCB 板编号。
+            color_features: ColorAnalyzer.analyze() 的结果。**只监测、不入总分**
+                ——不影响 ``overall_score`` 也不影响 ``ok_ng``。省略则为"未测"。
 
         Returns:
             QualityReport 对象。
@@ -261,6 +300,18 @@ class QualityAssessor:
                     f"{key} 评分偏低: {score:.1f}/100"
                 )
 
+        # --- 色度 / 饱和度（只记录，不参与上面的加权与判定） ---
+        if color_features is not None:
+            report.color_available = color_features.available
+            report.color_hue_mean_deg = color_features.hue_mean_deg
+            report.color_hue_deviation_deg = color_features.hue_deviation_deg
+            report.color_sat_mean = color_features.sat_mean
+            report.color_oor_abs_pct = color_features.oor_abs_pct
+            report.color_oor_adaptive_pct = color_features.oor_adaptive_pct
+            report.color_oor_count = color_features.oor_count
+            if not color_features.available and color_features.note:
+                report.warnings.append(f"色度未测: {color_features.note}")
+
         report.detail = {
             "scores": scores,
             "weights": self.weights,
@@ -271,6 +322,11 @@ class QualityAssessor:
                 "embedding_max_cnt": self.embedding_max_count,
                 "unroughened_max_pct": self.unroughened_max_pct,
             },
+            # 独立命名空间：刻意不进 scores / weights / thresholds，
+            # 否则会与上面三块"参与总分"的语义混淆。
+            "color": (
+                None if color_features is None else color_features.to_dict()
+            ),
         }
 
         return report
@@ -341,18 +397,31 @@ class QualityAssessor:
 
     def batch_assess(
         self, results: List[Tuple[List[Defect], np.ndarray, float, str]],
+        color_features: Optional[List["ColorFeatures"]] = None,
     ) -> List[QualityReport]:
         """批量质量评估。
 
         Args:
             results: [(defects, cv_heatmap, direction_consistency, board_id), ...]
+            color_features: 与 ``results`` **等长的可选并行列表**。单独一个参数
+                而不是塞进 4 元组，是为了不破坏既有调用方的元组解包。
 
         Returns:
             报告列表。
+
+        Raises:
+            ValueError: ``color_features`` 长度与 ``results`` 不一致。
         """
+        if color_features is not None and len(color_features) != len(results):
+            raise ValueError(
+                f"color_features 长度 {len(color_features)} 与 results "
+                f"长度 {len(results)} 不一致"
+            )
+
         reports = []
-        for defects, cv_map, dci, bid in results:
-            report = self.assess(defects, cv_map, dci, bid)
+        for i, (defects, cv_map, dci, bid) in enumerate(results):
+            cf = None if color_features is None else color_features[i]
+            report = self.assess(defects, cv_map, dci, bid, color_features=cf)
             reports.append(report)
         return reports
 
@@ -367,6 +436,15 @@ class QualityAssessor:
 
         n = len(reports)
         n_ok = sum(1 for r in reports if r.ok_ng)
+
+        hue_devs = [
+            r.color_hue_deviation_deg for r in reports
+            if r.color_available and r.color_hue_deviation_deg is not None
+        ]
+        sats = [
+            r.color_sat_mean for r in reports
+            if r.color_available and r.color_sat_mean is not None
+        ]
 
         return {
             "total": n,
@@ -383,6 +461,17 @@ class QualityAssessor:
             ),
             "avg_unroughened_pct": round(
                 np.mean([r.unroughened_percentage for r in reports]), 2
+            ),
+            # 色度：只统计真的拿到色彩量的样本（灰度输入会被排除）。
+            # 没有样本可统计时返回 **None 而不是 0.0** —— 0 会被读成"色度零
+            # 偏移"即满分。color_samples 同时给出参与统计的样本数，避免歧义。
+            "color_samples": len(hue_devs),
+            "avg_color_hue_dev_deg": (
+                None if not hue_devs
+                else round(float(np.mean(hue_devs)), 2)
+            ),
+            "avg_color_sat": (
+                None if not sats else round(float(np.mean(sats)), 2)
             ),
             "top_warnings": self._top_warnings(reports, 5),
         }

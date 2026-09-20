@@ -18,6 +18,12 @@ try:
     matplotlib.use("QtAgg")
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from ui.mpl_font import configure_cjk_font
+
+    # 必须在建第一个 Figure 之前设：rcParams 是进程级全局的，设一次就够，
+    # 之后所有图都继承。不设的话本文件里的中文标签会全部渲染成空心方块
+    # —— matplotlib 默认的 DejaVu Sans 没有任何汉字字形。
+    configure_cjk_font()
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
@@ -156,7 +162,12 @@ class StatsPanel(QWidget):
         self._pie_canvas.draw()
 
     def _draw_quality_radar(self):
-        """绘制五维质量雷达图。"""
+        """绘制五维质量雷达图。
+
+        刻意保持五维：色度 / 饱和度是**只监测、不进总分**的指标，把它画进
+        这张图会让人以为它参与了评分（雷达图的各项默认是可比的加权项）。
+        色度的展示出口是主窗口的结果面板、报告文本与导出表格。
+        """
         self._radar_fig.clear()
         ax = self._radar_fig.add_subplot(111, polar=True)
 

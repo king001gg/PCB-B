@@ -141,6 +141,7 @@ def run_cli(image_path: str, config_path: str):
     from core.defects import DefectDetector
     from core.quality import QualityAssessor
     from core.process_monitor import ProcessMonitor
+    from core.color import ColorAnalyzer
 
     # 加载配置
     with open(config_path, "r", encoding="utf-8") as f:
@@ -164,12 +165,36 @@ def run_cli(image_path: str, config_path: str):
     gray = preprocessor.process(image_rgb)
     texture_vec = texture_analyzer.analyze(gray)
     cv_heatmap = texture_analyzer.compute_cv_heatmap(gray)
-    dci = texture_analyzer.direction_consistency(gray)
+    dci = texture_analyzer.direction_consistency(
+        gray, texture_vec.gabor_orientation_energies
+    )
     defects = defect_detector.detect_all(image_rgb, texture_vec)
-    report = quality_assessor.assess(defects, cv_heatmap, dci)
+
+    # 色度 / 饱和度（只监测，不进总分）。喂的是 image_rgb（上面做过 BGR2RGB），
+    # 故显式声明 "rgb" —— 这个量无法从数组形状推断，喂错只会静默转掉色相。
+    color_features = ColorAnalyzer(config).analyze(image_rgb, color_order="rgb")
+
+    report = quality_assessor.assess(defects, cv_heatmap, dci,
+                                     color_features=color_features)
 
     # 输出结果
     print(report.summary())
+    if report.color_available:
+        if report.color_hue_mean_deg is None:
+            print("色度: 不可测（整板近中性，饱和度不足）")
+        else:
+            dev = report.color_hue_deviation_deg
+            dev_txt = "--" if dev is None else f"{dev:.1f}°"
+            sat = report.color_sat_mean
+            sat_txt = "--" if sat is None else f"{sat:.1f}"
+            print(f"色度偏移: {dev_txt} "
+                  f"(均值 {report.color_hue_mean_deg:.1f}°)  "
+                  f"饱和度: {sat_txt}  "
+                  f"越界: 绝对 {report.color_oor_abs_pct:.2f}% / "
+                  f"自适应 {report.color_oor_adaptive_pct:.2f}%"
+                  f"（{report.color_oor_count} 处）")
+    else:
+        print("色度: 未测（灰度输入无色彩信息）")
     if defects:
         print(f"\n缺陷列表 ({len(defects)} 处):")
         for d in defects:

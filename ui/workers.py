@@ -6,6 +6,7 @@
 import numpy as np
 from PySide6.QtCore import QThread, Signal
 
+from core.color import ColorAnalyzer
 from core.preprocessing import Preprocessor
 from core.texture import TextureAnalyzer
 from core.defects import DefectDetector, Defect
@@ -39,6 +40,8 @@ class DetectionWorker(QThread):
         quality_assessor: QualityAssessor,
         board_id: str = "",
         process_monitor: ProcessMonitor = None,
+        color_analyzer: ColorAnalyzer = None,
+        color_order: str = "rgb",
     ):
         super().__init__()
         self.image = image
@@ -48,6 +51,10 @@ class DetectionWorker(QThread):
         self.quality_assessor = quality_assessor
         self.board_id = board_id
         self.process_monitor = process_monitor
+        self.color_analyzer = color_analyzer
+        # GUI 在 _set_image 里做了 BGR2RGB，所以喂进来的是 RGB。这个量无法从
+        # 数组形状推断，喂错不报错、只会静默把色相转掉 172°，故显式声明。
+        self.color_order = color_order
 
     def run(self):
         try:
@@ -74,20 +81,34 @@ class DetectionWorker(QThread):
             self.progress.emit(50)
             cv_heatmap = self.texture_analyzer.compute_cv_heatmap(gray)
 
-            # (4) 方向一致性
-            direction_consistency = self.texture_analyzer.direction_consistency(gray)
+            # (4) 方向一致性 —— 复用 analyze() 那一趟 Gabor 的能量，
+            # 避免对同一张图再卷一遍全部滤波器
+            direction_consistency = self.texture_analyzer.direction_consistency(
+                gray, texture_vec.gabor_orientation_energies
+            )
 
             # (5) 缺陷检测
             self.progress.emit(70)
             defects = self.defect_detector.detect_all(self.image, texture_vec)
 
-            # (6) 质量评估
+            # (6) 色度 / 饱和度（只监测，不进总分）。失败不应阻断主检测流程。
+            color_features = None
+            if self.color_analyzer is not None:
+                try:
+                    color_features = self.color_analyzer.analyze(
+                        self.image, self.color_order
+                    )
+                except Exception:
+                    color_features = None
+
+            # (7) 质量评估
             self.progress.emit(85)
             report = self.quality_assessor.assess(
                 defects, cv_heatmap, direction_consistency, self.board_id,
+                color_features=color_features,
             )
 
-            # (7) 标注图像
+            # (8) 标注图像
             annotated = self.defect_detector.draw_defects(self.image, defects)
             heatmap = self.defect_detector.generate_defect_heatmap(
                 gray.shape, defects,

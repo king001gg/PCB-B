@@ -17,6 +17,15 @@ from core.quality import QualityReport
 from core.defects import Defect
 
 
+def _rnd(value, digits: int):
+    """None 安全的 rounding。
+
+    色度类字段可以是 None（未测 / 不可测），必须原样保留成 None 让表格留空，
+    不能变成 0 —— 0 会被读成「色度零偏移」即满分。
+    """
+    return None if value is None else round(value, digits)
+
+
 def export_csv(
     reports: List[QualityReport],
     output_path: str,
@@ -40,6 +49,12 @@ def export_csv(
                 "direction_consistency", "oxidation_percentage",
                 "embedding_count", "unroughened_percentage",
                 "warnings",
+                # 色度 / 饱和度，**追加在末尾**：前 11 列的位置不得变动，
+                # 否则下游按列号解析的脚本会静默错位。
+                "color_available", "color_hue_mean_deg",
+                "color_hue_deviation_deg", "color_sat_mean",
+                "color_oor_abs_pct", "color_oor_adaptive_pct",
+                "color_oor_count",
             ])
         for r in reports:
             writer.writerow([
@@ -49,6 +64,13 @@ def export_csv(
                 r.oxidation_percentage, r.embedding_count,
                 r.unroughened_percentage,
                 "; ".join(r.warnings),
+                1 if r.color_available else 0,
+                r.color_hue_mean_deg,
+                r.color_hue_deviation_deg,
+                r.color_sat_mean,
+                r.color_oor_abs_pct,
+                r.color_oor_adaptive_pct,
+                r.color_oor_count,
             ])
 
     print(f"[Export] CSV 已导出: {output_path} ({len(reports)} 条记录)")
@@ -84,6 +106,10 @@ def export_excel(
         "板号", "时间", "总分", "判定", "粗糙度均匀性",
         "粗糙度标准差", "方向一致性", "氧化面积%",
         "磨料嵌入数", "未粗化面积%", "预警",
+        # 色度 / 饱和度，追加在末尾（前 11 列位置不变）
+        "色度偏移(°)", "色相均值(°)", "饱和度",
+        "越界面积%(绝对)", "越界面积%(自适应)", "越界区域数",
+        "色度已测",
     ]
     for col, h in enumerate(headers, 1):
         cell = ws.cell(row=1, column=col, value=h)
@@ -104,6 +130,14 @@ def export_excel(
         ws.cell(row=row, column=9, value=r.embedding_count)
         ws.cell(row=row, column=10, value=round(r.unroughened_percentage, 2))
         ws.cell(row=row, column=11, value="; ".join(r.warnings))
+        # 色度 / 饱和度（只监测，不进总分）。None 就是空单元格 —— 不填 0。
+        ws.cell(row=row, column=12, value=_rnd(r.color_hue_deviation_deg, 2))
+        ws.cell(row=row, column=13, value=_rnd(r.color_hue_mean_deg, 2))
+        ws.cell(row=row, column=14, value=_rnd(r.color_sat_mean, 2))
+        ws.cell(row=row, column=15, value=round(r.color_oor_abs_pct, 4))
+        ws.cell(row=row, column=16, value=round(r.color_oor_adaptive_pct, 4))
+        ws.cell(row=row, column=17, value=r.color_oor_count)
+        ws.cell(row=row, column=18, value="是" if r.color_available else "否")
 
         # NG 行标红
         if not r.ok_ng:
@@ -238,6 +272,23 @@ def export_pdf(
         ("磨料嵌入", f"{report.embedding_count} 个"),
         ("未粗化面积", f"{report.unroughened_percentage:.2f}%"),
     ]
+
+    # 色度 / 饱和度（只监测，不进总分）
+    if not report.color_available:
+        metrics.append(("色度偏移", "未测（灰度输入）"))
+    else:
+        hue_dev = report.color_hue_deviation_deg
+        hue_mean = report.color_hue_mean_deg
+        sat = report.color_sat_mean
+        metrics.append(("色度偏移", "--" if hue_dev is None
+                        else f"{hue_dev:.1f}°"))
+        metrics.append(("色相均值", "--" if hue_mean is None
+                        else f"{hue_mean:.1f}°"))
+        metrics.append(("饱和度", "--" if sat is None else f"{sat:.1f}"))
+        metrics.append(("越界面积(绝对)", f"{report.color_oor_abs_pct:.2f}%"))
+        metrics.append(("越界面积(自适应)",
+                        f"{report.color_oor_adaptive_pct:.2f}%"))
+        metrics.append(("越界区域数", f"{report.color_oor_count} 处"))
     for label, value in metrics:
         pdf.cell(60, 6, label)
         pdf.cell(0, 6, value, ln=True)

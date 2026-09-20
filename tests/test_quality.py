@@ -30,6 +30,7 @@ from datetime import datetime
 import numpy as np
 import pytest
 
+from core.color import ColorFeatures, ColorRegion
 from core.defects import Defect
 from core.quality import QualityAssessor, QualityReport
 from core.texture import TextureAnalyzer
@@ -59,6 +60,35 @@ def assessor(default_config):
     刻意读真配置而不是在测试里另写一份阈值 —— 阈值改了这里会第一时间炸。
     """
     return QualityAssessor(default_config)
+
+
+@pytest.fixture
+def color_features_factory():
+    """构造一个「已测到色彩量」的 ColorFeatures，可按需覆盖字段。"""
+
+    def _make(regions=None, **overrides) -> ColorFeatures:
+        feats = ColorFeatures(
+            available=True,
+            color_order="rgb",
+            pixel_count=10000,
+            valid_hue_pixels=9000,
+            hue_mean_deg=34.0,
+            hue_circ_std_deg=4.0,
+            hue_r=0.99,
+            hue_median_deg=34.0,
+            sat_mean=178.0,
+            sat_std=6.0,
+            sat_p05=168.0,
+            sat_p95=188.0,
+            val_mean=200.0,
+            hue_deviation_deg=0.0,
+            regions=regions or [],
+        )
+        for k, v in overrides.items():
+            setattr(feats, k, v)
+        return feats
+
+    return _make
 
 
 @pytest.fixture
@@ -934,14 +964,74 @@ class TestYieldStats:
 class TestSerialization:
     """to_dict / summary —— 入库与报表出口。"""
 
+    # 既有 11 键：位置与含义不得变动。
+    LEGACY_KEYS = (
+        "overall_score", "ok_ng", "roughness_uniformity", "roughness_std",
+        "direction_consistency", "oxidation_percentage", "embedding_count",
+        "unroughened_percentage", "warnings", "timestamp", "board_id",
+    )
+
+    # 色度 / 饱和度 7 键：只监测、不入总分，**追加在末尾**。
+    COLOR_KEYS = (
+        "color_available", "color_hue_mean_deg", "color_hue_deviation_deg",
+        "color_sat_mean", "color_oor_abs_pct", "color_oor_adaptive_pct",
+        "color_oor_count",
+    )
+
     def test_to_dict_has_all_documented_fields(self, assessor, heatmap_factory):
         """字段集合必须稳定，少一个字段下游就取不到值。"""
         report = assessor.assess([], heatmap_factory(mean=0.1), 0.2, board_id="B7")
-        assert set(report.to_dict()) == {
-            "overall_score", "ok_ng", "roughness_uniformity", "roughness_std",
-            "direction_consistency", "oxidation_percentage", "embedding_count",
-            "unroughened_percentage", "warnings", "timestamp", "board_id",
-        }
+        assert set(report.to_dict()) == set(self.LEGACY_KEYS) | set(self.COLOR_KEYS)
+
+    def test_to_dict_key_order_is_stable(self, assessor, heatmap_factory):
+        """既有 11 键必须在原位，新增键只准出现在末尾。
+
+        导出层（data/export.py）按下标写列。把新键插在中间会让下游按列号解析的
+        脚本静默错位 —— 这类错位不报错，只会把饱和度读成磨料数。
+        """
+        report = assessor.assess([], heatmap_factory(mean=0.1), 0.2, board_id="B7")
+        keys = list(report.to_dict())
+
+        n = len(self.LEGACY_KEYS)
+        assert tuple(keys[:n]) == self.LEGACY_KEYS
+        assert tuple(keys[n:]) == self.COLOR_KEYS
+
+    def test_color_defaults_to_unmeasured(self, assessor, heatmap_factory):
+        """不传 color_features 时色度必须是「未测」，不能是 0。
+
+        0 会被读成「色度零偏移」即满分，比不报更危险。
+        """
+        report = assessor.assess([], heatmap_factory(mean=0.1), 0.2)
+
+        assert report.color_available is False
+        assert report.color_hue_mean_deg is None
+        assert report.color_hue_deviation_deg is None
+        assert report.color_sat_mean is None
+        assert report.detail["color"] is None
+
+    def test_color_never_touches_score_or_verdict(self, assessor, heatmap_factory,
+                                                  color_features_factory):
+        """色度无论多离谱，都不得改变总分与 OK/NG —— 这是第一版的硬约定。
+
+        权重五项精确加和 1.0，加维度必然重排权重、改动既有样本总分，属于必须
+        重回标定的动作。所以色度只监测。
+        """
+        defects, heat = [], heatmap_factory(mean=0.1)
+        baseline = assessor.assess(defects, heat, 0.2, board_id="B7")
+
+        wild = color_features_factory(
+            hue_mean_deg=200.0, sat_mean=3.0, oor_abs_pct=99.0,
+        )
+        with_color = assessor.assess(defects, heat, 0.2, board_id="B7",
+                                     color_features=wild)
+
+        assert with_color.overall_score == baseline.overall_score
+        assert with_color.ok_ng == baseline.ok_ng
+        assert with_color.detail["scores"] == baseline.detail["scores"]
+        assert with_color.detail["weights"] == baseline.detail["weights"]
+        # 但色度自身要如实记录下来
+        assert with_color.color_available is True
+        assert with_color.color_oor_abs_pct == pytest.approx(99.0)
 
     def test_to_dict_values_match_report(self, assessor, heatmap_factory, defect_factory):
         """字典值必须与对象字段一致，且板号/时间戳不得丢失。"""

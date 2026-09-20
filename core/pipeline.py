@@ -17,6 +17,7 @@ from core.texture import TextureAnalyzer, TextureFeatureVector
 from core.defects import DefectDetector, Defect
 from core.quality import QualityAssessor, QualityReport
 from core.acquisition import ImageAcquisition, create_acquisition
+from core.color import ColorAnalyzer
 from core.process_monitor import ProcessMonitor, ProcessGLCMFeatures
 
 
@@ -92,6 +93,8 @@ class InspectionPipeline:
         self.defect_detector = DefectDetector(config)
         self.quality_assessor = QualityAssessor(config)
         self.process_monitor = ProcessMonitor(config)
+        # 色度 / 饱和度：只监测、不进总分（见 core/color.py 的 C7）
+        self.color_analyzer = ColorAnalyzer(config)
 
         # 进度回调
         self._progress_callbacks: List[Callable[[int, str], None]] = []
@@ -119,12 +122,19 @@ class InspectionPipeline:
         self,
         image: np.ndarray,
         board_id: str = "",
+        color_order: str = "rgb",
     ) -> InspectionResult:
         """运行完整的检测流水线。
 
         Args:
             image: 输入图像，BGR 或 RGB (H, W, 3) 或灰度 (H, W)。
             board_id: PCB 板编号。
+            color_order: ``image`` 的通道顺序，``"rgb"`` 或 ``"bgr"``。只影响
+                色度 / 饱和度指标——**这个量无法从数组形状推断**，喂错不会报错、
+                只会静默把色相转掉 172°（见 core/color.py 的 C2/C3）。默认值
+                ``"rgb"`` 对齐 GUI（ui/main_window.py）与 CLI（main.py）这两条
+                路径，它们都在入口做了 BGR2RGB；从采集器直接取帧的
+                ``process_acquisition()`` 另传 ``"bgr"``。
 
         Returns:
             InspectionResult 包含所有检测信息。
@@ -154,8 +164,11 @@ class InspectionPipeline:
         cv_heatmap = self.texture_analyzer.compute_cv_heatmap(gray)
         result.roughness_map = cv_heatmap
 
-        # 方向一致性
-        direction_consistency = self.texture_analyzer.direction_consistency(gray)
+        # 方向一致性 —— 复用 analyze() 那一趟 Gabor 的能量，
+        # 避免在此对同一张图再卷一遍全部滤波器
+        direction_consistency = self.texture_analyzer.direction_consistency(
+            gray, texture_vec.gabor_orientation_energies
+        )
 
         t1 = time.perf_counter()
         result.timings["texture"] = (t1 - t0) * 1000
@@ -195,8 +208,14 @@ class InspectionPipeline:
         self._notify_progress(76, "质量评估中")
         t0 = time.perf_counter()
 
+        # 色度 / 饱和度：喂**原始 image** 而不是 color_image。两者只在灰度输入
+        # 下不同——那时 color_image 是 GRAY2RGB 的三通道假彩色，会被判成"整板
+        # 近中性灰"；而原始二维输入的提示是"灰度输入无色彩信息"，后者才是实情。
+        color_features = self.color_analyzer.analyze(image, color_order)
+
         report = self.quality_assessor.assess(
             defects, cv_heatmap, direction_consistency, board_id,
+            color_features=color_features,
         )
         result.quality = report
         result.ok_ng = report.ok_ng
@@ -208,8 +227,11 @@ class InspectionPipeline:
         # --- 后处理：生成标注和热力图 (90-100%) ---
         self._notify_progress(91, "生成输出图像")
 
-        # 缺陷标注叠加
-        annotated = self.defect_detector.draw_defects(image, defects)
+        # 缺陷标注叠加。必须喂 color_image 而不是 image：灰度输入下 image 是
+        # 二维的，缺陷非空时会在 core/defects.py 的 overlay[d.mask>0]=color 处
+        # 炸（二维数组布尔索引赋三维颜色）。彩色输入下 color_image **就是**
+        # image 本身（同一个对象，非拷贝），故彩色路径逐字节不变。
+        annotated = self.defect_detector.draw_defects(color_image, defects)
         result.image = annotated
 
         # 缺陷热力图
@@ -233,12 +255,14 @@ class InspectionPipeline:
         self,
         images: List[np.ndarray],
         board_ids: List[str] = None,
+        color_order: str = "rgb",
     ) -> List[InspectionResult]:
         """批量处理多张图像。
 
         Args:
             images: 图像列表。
             board_ids: 可选的板号列表。
+            color_order: 这批图像的通道顺序，见 `run()`。
 
         Returns:
             检测结果列表。
@@ -248,7 +272,7 @@ class InspectionPipeline:
 
         results = []
         for i, (img, bid) in enumerate(zip(images, board_ids)):
-            result = self.run(img, bid)
+            result = self.run(img, bid, color_order=color_order)
             results.append(result)
             print(f"  [{i+1}/{len(images)}] {result.summary()}")
 
@@ -286,7 +310,8 @@ class InspectionPipeline:
                 break
 
             board_id = f"{frame.source_id}_{frame.frame_index}"
-            result = self.run(frame.image, board_id)
+            # 采集器给的是相机原生顺序 / cv2.imread 的结果，都是 BGR
+            result = self.run(frame.image, board_id, color_order="bgr")
             results.append(result)
 
             frame_count += 1
