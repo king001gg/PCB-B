@@ -42,7 +42,16 @@ _TRIGGER_MODES = (
 )
 
 #: 像素格式下拉项。MvsCamera 会把 Mono8/RGB8 这类友好名解析成 SDK 枚举名。
-_PIXEL_FORMATS = ("Mono8", "Mono10", "Mono12", "RGB8", "BGR8")
+#:
+#: Bayer 四种必须列出来：很多海康彩色机**不提供** RGB8/BGR8 打包输出，原生只出
+#: Bayer。缺了它们，用户会以为"相机不支持彩色"，转而去找别的驱动。
+#: 下拉框本身是可编辑的，表里没有的枚举名也能直接填。
+_PIXEL_FORMATS = (
+    "Mono8", "Mono10", "Mono12",
+    "RGB8", "BGR8",
+    "BayerRG8", "BayerGB8", "BayerGR8", "BayerBG8",
+    "YUV422",
+)
 
 
 class CameraDialog(QDialog):
@@ -83,9 +92,19 @@ class CameraDialog(QDialog):
 
         self.pixel_combo = QComboBox()
         self.pixel_combo.addItems(_PIXEL_FORMATS)
-        idx = self.pixel_combo.findText(
-            self.camera_config.get("pixel_format", "Mono8"))
-        self.pixel_combo.setCurrentIndex(max(idx, 0))
+        # 允许直接填 SDK 枚举名（如 BayerRG8）—— 跟下面触发源下拉框同样的处理。
+        #
+        # **这句不能省**：下拉框不可编辑时，`findText` 找不到就返回 -1，
+        # `setCurrentIndex(max(-1, 0))` 于是落到第 0 项，配置里写的 BayerRG8 /
+        # RGB8_Packed 会被显示成、并在确定时**写回** Mono8。症状就是「换了彩色
+        # 相机却还是黑白」，而且不报任何错。
+        self.pixel_combo.setEditable(True)
+        configured = self.camera_config.get("pixel_format", "Mono8")
+        idx = self.pixel_combo.findText(configured)
+        if idx >= 0:
+            self.pixel_combo.setCurrentIndex(idx)
+        else:
+            self.pixel_combo.setEditText(configured)
         basic_form.addRow("像素格式:", self.pixel_combo)
 
         layout.addWidget(basic_group)
