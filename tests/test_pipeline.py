@@ -769,7 +769,11 @@ class TestProcessAcquisition:
     def test_results_match_run(self, pipeline, stub_acquisition, color_image):
         """采集路径的结果与直接 run() 一致。"""
         results = pipeline.process_acquisition(stub_acquisition(2))
-        single = pipeline.run(color_image, "cam_0")
+        # 必须显式声明 "bgr"：process_acquisition 喂的是采集器给的原生字节
+        # （相机缓冲 / cv2.imread，都是 BGR），而 run() 的默认值是 "rgb"
+        # （对齐 GUI 与 CLI，那两条路径在入口做了 BGR2RGB）。通道顺序无法从
+        # 数组形状推断，喂错不会报错、只会静默转掉色相，故此处必须写明。
+        single = pipeline.run(color_image, "cam_0", color_order="bgr")
         assert _fingerprint(results[0]) == _fingerprint(single)
 
     def test_long_run_logs_every_ten_frames(self, pipeline, default_config):
@@ -812,7 +816,9 @@ class TestDegenerateInputs:
 
         assert result.gray.shape == (1, 1)
         assert result.heatmap.shape == (1, 1)
-        assert result.image.shape == (1, 1)
+        # 标注图恒为三通道：灰度输入经 GRAY2RGB 提升后再交给 draw_defects
+        # （原来这里传的是二维图，检出缺陷时会崩，详见 TestGrayscaleInput）
+        assert result.image.shape == (1, 1, 3)
         assert result.defects == []
         assert result.quality is not None
         assert result.summary().strip()
@@ -859,37 +865,48 @@ class TestDegenerateInputs:
 class TestGrayscaleInput:
     """core/pipeline.py 的 run() 文档承诺支持灰度 (H, W) 输入。
 
-    以下第一条断言该承诺，第二条记录当前实际行为 —— 两者互为证据。
+    这里曾是两条 xfail + 一条「记录错误行为」的用例，记录一个已修缺陷：
+    run() 把二维图原样交给 draw_defects，defects.py 的半透明叠加
+    ``overlay[d.mask>0]=color`` 只对三通道成立，于是「良品板能跑通、有缺陷的板
+    必崩」，恰好把 NG 板全部漏掉。修法是把 ``color_image`` 交给 draw_defects
+    （彩色输入下它就是 image 本身，故彩色路径逐字节不变）。
+
+    现在这三条是**回归防线**：改回 ``draw_defects(image, ...)`` 它们就会红。
     """
 
-    @pytest.mark.xfail(
-        reason="已知缺陷：灰度输入 + 检出任意缺陷时，run() 在 draw_defects 处崩溃。"
-               "pipeline.py 把二维的 result.gray 原样交给 draw_defects，"
-               "defects.py 的半透明叠加 overlay[d.mask>0]=color 只对三通道成立。"
-               "后果是「良品板能跑通、有缺陷的板必崩」，恰好把 NG 板全部漏掉。"
-    )
     def test_gray_image_runs_full_chain(self, pipeline, gray_image):
         """灰度图应能走完整链路。"""
         result = pipeline.run(gray_image)
         assert result.quality is not None
 
-    def test_actual_behavior_is_a_value_error_from_draw_defects(self, pipeline,
-                                                               gray_image):
-        """记录实际行为：二维输入 + 检出缺陷 → ValueError，且发生在标注阶段。
+    def test_gray_with_defects_does_not_raise(self, pipeline, gray_image):
+        """灰度 + 检出缺陷不得抛异常，且标注图是三通道。
 
-        异常类型与位置都固定下来，将来修好这条时本用例会变红，提醒同步更新
-        上面那条 xfail —— 缺陷修复不该被一条「记录错误行为」的用例挡住。
+        这条是修复的核心断言：夹具造的灰度图必然带缺陷，所以它确实走到了
+        draw_defects 的叠加分支（而不是靠"没缺陷"侥幸绕过）。
         """
-        with pytest.raises(ValueError, match="boolean array indexing assignment"):
-            pipeline.run(gray_image)
+        result = pipeline.run(gray_image)
+
+        assert result.defects, "夹具应造出缺陷，否则这条用例没有覆盖到崩溃点"
+        assert result.image.ndim == 3
+        assert result.image.shape[:2] == gray_image.shape
+        assert result.quality is not None
+
+    def test_gray_input_reports_color_as_unavailable(self, pipeline, gray_image):
+        """灰度输入没有色彩量，必须显式标为未测 —— 不能静默填 0。
+
+        填 0 会被读成「色度零偏移」即满分，比不报更危险。
+        """
+        result = pipeline.run(gray_image)
+
+        assert result.quality.color_available is False
+        assert result.quality.color_hue_mean_deg is None
+        assert result.quality.color_hue_deviation_deg is None
+        assert any("色度未测" in w for w in result.quality.warnings)
 
     def test_gray_failure_only_happens_when_defects_exist(self, pipeline,
                                                           config_factory, gray_image):
-        """缺陷检测全关时，灰度输入可以跑通 —— 证明崩溃与图像内容相关。
-
-        也就是说：同一张灰度图，良品（无缺陷）能出结果，NG 板反而抛异常。
-        这个「失败方向」是反的，对在线检测尤其危险。
-        """
+        """缺陷检测全关时，灰度输入同样跑通（此前后者是唯一能跑的那条）。"""
         cfg = config_factory()
         for name in ("oxidation", "embedding", "unroughened"):
             cfg["inspection"]["defects"][name]["enabled"] = False
@@ -902,10 +919,6 @@ class TestGrayscaleInput:
         assert result.summary().strip()
 
     @pytest.mark.slow
-    @pytest.mark.xfail(
-        reason="已知缺陷：与 test_gray_image_runs_full_chain 同因，此处用生产尺寸的"
-               "sandblasted_image（conftest 共享夹具）复现。"
-    )
     def test_full_size_gray_image(self, pipeline, sandblasted_image):
         """生产尺寸灰度图同样应能走完整链路。"""
         result = pipeline.run(sandblasted_image, board_id="FULL-GRAY")

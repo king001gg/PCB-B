@@ -16,6 +16,29 @@ from pathlib import Path
 from data.models import InspectionRecord, DefectRecord
 
 
+# ============================================================================
+# Schema 迁移
+# ============================================================================
+#
+# 为什么必须有这一段：建表用的是 ``CREATE TABLE IF NOT EXISTS``，对**已存在**
+# 的 data/inspection.db 是空操作。而 insert_inspection() 是照 record.to_dict()
+# 动态拼 INSERT 的，所以升级后第一次检测会直接抛
+# ``sqlite3.OperationalError: table inspections has no column named ...``。
+# 光改建表语句只能覆盖全新部署，覆盖不了老库。
+#
+# 每一项是 (列名, 列定义)。只准往后追加，不准改已有项的列名或定义。
+
+_SCHEMA_MIGRATIONS = (
+    ("color_available", "INTEGER DEFAULT 0"),
+    ("color_hue_mean_deg", "REAL"),
+    ("color_hue_deviation_deg", "REAL"),
+    ("color_sat_mean", "REAL"),
+    ("color_oor_abs_pct", "REAL DEFAULT 0.0"),
+    ("color_oor_adaptive_pct", "REAL DEFAULT 0.0"),
+    ("color_oor_count", "INTEGER DEFAULT 0"),
+)
+
+
 class InspectionDatabase:
     """检测结果数据库。
 
@@ -55,7 +78,14 @@ class InspectionDatabase:
                 image_path      TEXT DEFAULT '',
                 result_image_path TEXT DEFAULT '',
                 heatmap_path    TEXT DEFAULT '',
-                inspection_time TEXT DEFAULT ''
+                inspection_time TEXT DEFAULT '',
+                color_available INTEGER DEFAULT 0,
+                color_hue_mean_deg REAL,
+                color_hue_deviation_deg REAL,
+                color_sat_mean REAL,
+                color_oor_abs_pct REAL DEFAULT 0.0,
+                color_oor_adaptive_pct REAL DEFAULT 0.0,
+                color_oor_count INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS defects (
@@ -85,6 +115,37 @@ class InspectionDatabase:
                 ON defects(inspection_id);
         """)
         self._conn.commit()
+
+        # 上面的 CREATE TABLE IF NOT EXISTS 对老库是空操作，补列得单独走
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> int:
+        """给已存在的库补上缺失的列。幂等。
+
+        每次都对着 ``PRAGMA table_info`` 差集来补，所以重复调用无副作用，
+        也不会动到已有的列和数据（``ALTER TABLE ADD COLUMN`` 是就地加列，
+        老行的新列为 NULL / 默认值）。
+
+        Returns:
+            本次实际新增的列数（全新库或已是最新时为 0）。
+        """
+        self._ensure_connection()
+        cursor = self._conn.cursor()
+        cursor.execute("PRAGMA table_info(inspections)")
+        existing = {row[1] for row in cursor.fetchall()}
+
+        added = 0
+        for column, decl in _SCHEMA_MIGRATIONS:
+            if column in existing:
+                continue
+            cursor.execute(
+                f"ALTER TABLE inspections ADD COLUMN {column} {decl}"
+            )
+            added += 1
+
+        if added:
+            self._conn.commit()
+        return added
 
     # ------------------------------------------------------------------
     # CRUD 操作
@@ -266,6 +327,24 @@ class InspectionDatabase:
             result_image_path=row["result_image_path"] or "",
             heatmap_path=row["heatmap_path"] or "",
             inspection_time=row["inspection_time"] or "",
+            # 色相类保持 None（NULL）而不是 0 —— 0 会被读成「色度零偏移」。
+            # 这里刻意不用 ``or``：0.0 是合法取值，用 ``or`` 会把 0.0 也变成
+            # 默认值，虽然当前默认值也是 0.0，但语义不同，日后改默认值时会被坑。
+            color_available=bool(row["color_available"]),
+            color_hue_mean_deg=row["color_hue_mean_deg"],
+            color_hue_deviation_deg=row["color_hue_deviation_deg"],
+            color_sat_mean=row["color_sat_mean"],
+            color_oor_abs_pct=(
+                0.0 if row["color_oor_abs_pct"] is None
+                else row["color_oor_abs_pct"]
+            ),
+            color_oor_adaptive_pct=(
+                0.0 if row["color_oor_adaptive_pct"] is None
+                else row["color_oor_adaptive_pct"]
+            ),
+            color_oor_count=(
+                0 if row["color_oor_count"] is None else row["color_oor_count"]
+            ),
         )
 
     def _row_to_defect(self, row) -> DefectRecord:

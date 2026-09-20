@@ -156,7 +156,12 @@ class StatsPanel(QWidget):
         self._pie_canvas.draw()
 
     def _draw_quality_radar(self):
-        """绘制五维质量雷达图。"""
+        """绘制五维质量雷达图。
+
+        刻意保持五维：色度 / 饱和度是**只监测、不进总分**的指标，把它画进
+        这张图会让人以为它参与了评分（雷达图的各项默认是可比的加权项）。
+        色度的展示出口是主窗口的结果面板、报告文本与导出表格。
+        """
         self._radar_fig.clear()
         ax = self._radar_fig.add_subplot(111, polar=True)
 

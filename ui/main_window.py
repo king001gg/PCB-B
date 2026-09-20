@@ -37,6 +37,7 @@ from core.preprocessing import Preprocessor
 from core.texture import TextureAnalyzer
 from core.defects import DefectDetector
 from core.quality import QualityAssessor, QualityReport
+from core.color import ColorAnalyzer
 from core.pipeline import InspectionResult
 from core.process_monitor import ProcessMonitor
 
@@ -113,6 +114,7 @@ class MainWindow(QMainWindow):
         self.defect_detector = DefectDetector(self.config)
         self.quality_assessor = QualityAssessor(self.config)
         self.process_monitor = ProcessMonitor(self.config)
+        self.color_analyzer = ColorAnalyzer(self.config)
 
     def reload_config(self):
         """重新加载配置并更新所有模块。"""
@@ -271,6 +273,9 @@ class MainWindow(QMainWindow):
             ("氧化斑面积:", "oxidation_value"),
             ("磨料嵌入:", "embedding_value"),
             ("未粗化面积:", "unroughened_value"),
+            # 色度 / 饱和度：只监测，不进上面的加权总分、不影响 OK/NG
+            ("色度偏移:", "color_hue_value"),
+            ("饱和度:", "color_sat_value"),
         ]
         self.metric_labels = {}
         for row, (label, key) in enumerate(metrics):
@@ -441,6 +446,7 @@ class MainWindow(QMainWindow):
             quality_assessor=self.quality_assessor,
             board_id=board_id,
             process_monitor=self.process_monitor,
+            color_analyzer=self.color_analyzer,
         )
         self.thread.finished.connect(self._on_detection_finished)
         self.thread.progress.connect(self._on_progress)
@@ -636,6 +642,25 @@ class MainWindow(QMainWindow):
         self.metric_labels["unroughened_value"].setText(
             f"{q.unroughened_percentage:.2f}%"
         )
+
+        # 色度 / 饱和度（只监测）。未测时明确写「未测」而不是显示 0 ——
+        # 0 会被读成「色度零偏移」即满分。
+        if not q.color_available:
+            self.metric_labels["color_hue_value"].setText("未测（灰度输入）")
+            self.metric_labels["color_sat_value"].setText("未测")
+        else:
+            if q.color_hue_mean_deg is None:
+                self.metric_labels["color_hue_value"].setText("不可测（近中性）")
+            else:
+                dev = q.color_hue_deviation_deg
+                dev_txt = "--" if dev is None else f"{dev:.1f}°"
+                self.metric_labels["color_hue_value"].setText(
+                    f"{dev_txt} (均值 {q.color_hue_mean_deg:.1f}°)"
+                )
+            sat_txt = "--" if q.color_sat_mean is None else f"{q.color_sat_mean:.1f}"
+            if q.color_oor_count:
+                sat_txt += f"  ⚠ 越界 {q.color_oor_count} 处"
+            self.metric_labels["color_sat_value"].setText(sat_txt)
 
         # 缺陷列表
         if result.defects:
