@@ -18,6 +18,12 @@ try:
     matplotlib.use("QtAgg")
     from matplotlib.figure import Figure
     from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
+    from ui.mpl_font import configure_cjk_font
+
+    # 必须在建第一个 Figure 之前设：rcParams 是进程级全局的，设一次就够，
+    # 之后所有图都继承。不设的话本文件里的中文标签会全部渲染成空心方块
+    # —— matplotlib 默认的 DejaVu Sans 没有任何汉字字形。
+    configure_cjk_font()
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
