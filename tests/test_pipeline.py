@@ -422,6 +422,8 @@ class TestOrchestrationMatchesSubmodules:
         gray = pipeline.preprocessor.process(image)
         texture_vec = pipeline.texture_analyzer.analyze(gray)
         cv_heatmap = pipeline.texture_analyzer.compute_cv_heatmap(gray)
+        # 刻意不传 analyze() 算出的能量：与 pipeline.run() 相比这里多跑一趟
+        # Gabor，正好用来证明「复用能量」不改变结果。别「顺手」补上。
         dci = pipeline.texture_analyzer.direction_consistency(gray)
         defects = pipeline.defect_detector.detect_all(image, texture_vec)
         report = pipeline.quality_assessor.assess(defects, cv_heatmap, dci, board_id)
@@ -484,6 +486,29 @@ class TestOrchestrationMatchesSubmodules:
         result = pipeline.run(color_image)
         want = pipeline.texture_analyzer.analyze(result.gray)
         assert np.array_equal(result.texture_features.flatten(), want.flatten())
+
+    def test_pipeline_reuses_gabor_energies(self, pipeline, color_image,
+                                            monkeypatch):
+        """管道必须把 analyze() 的能量传给 DCI，否则每次检测白跑一趟 Gabor。
+
+        这是性能契约而非正确性契约：不传也会得到逐位相同的结果
+        （见 ``_by_hand`` 的对照），只是对同一张图多卷 n_kernels 个核 ——
+        相机分辨率下约 3.4 s。
+        """
+        seen = []
+        original = pipeline.texture_analyzer.direction_consistency
+
+        def spy(image, orientation_energies=None):
+            seen.append(orientation_energies)
+            return original(image, orientation_energies)
+
+        monkeypatch.setattr(
+            pipeline.texture_analyzer, "direction_consistency", spy
+        )
+        pipeline.run(color_image)
+
+        assert len(seen) == 1
+        assert seen[0] is not None
 
 
 # ============================================================================

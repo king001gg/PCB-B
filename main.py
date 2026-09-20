@@ -164,7 +164,9 @@ def run_cli(image_path: str, config_path: str):
     gray = preprocessor.process(image_rgb)
     texture_vec = texture_analyzer.analyze(gray)
     cv_heatmap = texture_analyzer.compute_cv_heatmap(gray)
-    dci = texture_analyzer.direction_consistency(gray)
+    dci = texture_analyzer.direction_consistency(
+        gray, texture_vec.gabor_orientation_energies
+    )
     defects = defect_detector.detect_all(image_rgb, texture_vec)
     report = quality_assessor.assess(defects, cv_heatmap, dci)
 

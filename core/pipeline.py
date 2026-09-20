@@ -154,8 +154,11 @@ class InspectionPipeline:
         cv_heatmap = self.texture_analyzer.compute_cv_heatmap(gray)
         result.roughness_map = cv_heatmap
 
-        # 方向一致性
-        direction_consistency = self.texture_analyzer.direction_consistency(gray)
+        # 方向一致性 —— 复用 analyze() 那一趟 Gabor 的能量，
+        # 避免在此对同一张图再卷一遍全部滤波器
+        direction_consistency = self.texture_analyzer.direction_consistency(
+            gray, texture_vec.gabor_orientation_energies
+        )
 
         t1 = time.perf_counter()
         result.timings["texture"] = (t1 - t0) * 1000

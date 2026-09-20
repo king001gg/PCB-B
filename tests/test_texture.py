@@ -186,3 +186,125 @@ class TestTextureAnalyzer:
         flat = tv.flatten()
         assert flat.ndim == 1
         assert len(flat) > 0
+
+
+class TestGaborConvolutionContract:
+    """锁定 Gabor 卷积的数值契约。
+
+    ``GaborFilterBank._convolve()`` 用 ``cv2.filter2D`` 复现
+    ``scipy.signal.convolve2d(mode="same", boundary="symm")``（原实现，慢
+    12～21 倍，在相机分辨率下占整条流水线耗时的 86%）。这里有两处改错了
+    不会报错、只会静默算错的地方，故用 scipy 原实现把语义钉住：
+
+      * ``filter2D`` 算的是相关、``convolve2d`` 算的是卷积 —— 核必须翻转；
+      * ``BORDER_REFLECT`` 对应 scipy 的 ``"symm"``（边缘样本重复）；
+        少一像素的 ``BORDER_REFLECT_101`` 是 scipy 的 ``"reflect"``，不是它。
+
+    边界带单独断言：边界模式写错时内部仍然一致，只有边缘会偏。
+    scipy 仅作测试参照，运行时已不再调用。
+    """
+
+    @pytest.fixture
+    def reference(self):
+        """scipy 原实现，作为数值参照。"""
+        scipy_signal = pytest.importorskip("scipy.signal")
+
+        def convolve(img, kernel):
+            return scipy_signal.convolve2d(
+                img, kernel, mode="same", boundary="symm"
+            )
+        return convolve
+
+    @pytest.fixture
+    def bank(self):
+        return GaborFilterBank(orientations=4, scales=[3, 5], frequencies=[0.3])
+
+    @pytest.fixture
+    def image(self):
+        """确定性灰度图（固定种子），避免用随机图像做数值断言。"""
+        rng = np.random.default_rng(20260920)
+        y, x = np.mgrid[0:120, 0:120]
+        img = 128 + 60 * np.sin(x * 0.15) + 20 * np.cos(y * 0.1)
+        img = np.clip(img + rng.integers(0, 10, img.shape), 0, 255)
+        return img.astype(np.uint8)
+
+    @pytest.mark.parametrize("scale,theta,freq", [
+        (3, 0.0, 0.1), (5, np.pi / 4, 0.3), (7, 3 * np.pi / 4, 0.5),
+    ])
+    def test_convolve_matches_scipy(self, bank, image, reference,
+                                    scale, theta, freq):
+        """cv2 路径应与 scipy 原实现逐点一致，边界带同样一致。"""
+        kernel = bank._gabor_kernel(scale, theta, freq)
+        img = bank._as_float(image)
+        got = bank._convolve(img, kernel)
+        want = reference(img, kernel)
+
+        assert got.shape == want.shape
+        band = max(kernel.shape)
+        assert np.abs(got - want).max() < 1e-12
+        assert np.abs(got[:band] - want[:band]).max() < 1e-12
+        assert np.abs(got[-band:] - want[-band:]).max() < 1e-12
+        assert np.abs(got[:, :band] - want[:, :band]).max() < 1e-12
+        assert np.abs(got[:, -band:] - want[:, -band:]).max() < 1e-12
+
+    def test_scan_feature_vector_matches_scipy(self, bank, image, reference):
+        """scan() 的特征向量应与逐核 scipy 卷积后取 mean/std 一致。"""
+        img = bank._as_float(image)
+        want = []
+        for kernel in bank._kernels:
+            r = reference(img, kernel)
+            want.append(np.mean(r))
+            want.append(np.std(r))
+
+        got, _ = bank.scan(image)
+        assert np.abs(got - np.array(want)).max() < 1e-12
+
+    def test_scan_energies_grouping(self, bank, image):
+        """能量按 (freq, scale) 分组，每组成员数 = 方向数。"""
+        _, energies = bank.scan(image)
+
+        assert bank.n_groups * bank.orientations == bank.n_kernels
+        assert len(energies) == bank.n_groups
+        assert all(len(g) == bank.orientations for g in energies)
+
+    def test_scan_energies_match_scipy(self, bank, image, reference):
+        """各组能量应与 scipy 原实现一致，且落位到正确的组。"""
+        img = bank._as_float(image)
+        want = [[] for _ in range(bank.n_groups)]
+        for kernel, group in zip(bank._kernels, bank._kernel_group):
+            want[group].append(np.mean(reference(img, kernel) ** 2))
+
+        _, energies = bank.scan(image)
+        assert len(energies) == len(want)
+        for got_group, want_group in zip(energies, want):
+            assert len(got_group) == len(want_group)
+            assert np.abs(np.array(got_group) - np.array(want_group)).max() < 1e-12
+
+    def test_direction_consistency_reuses_energies(self, bank, image):
+        """传入 scan() 的能量应与自行扫描逐位相同（复用不得改变结果）。"""
+        _, energies = bank.scan(image)
+        assert (bank.direction_consistency(image, energies)
+                == bank.direction_consistency(image))
+
+    def test_energy_map_matches_filter(self, bank, image):
+        """流式累加的能量图应与收集全部响应图后取均值逐位一致。"""
+        responses = bank.filter(image)
+        want = np.zeros_like(responses[0])
+        for r in responses:
+            want += r ** 2
+        want /= len(responses)
+
+        assert np.array_equal(bank.energy_map(image), want)
+
+    def test_scan_returns_scalars_not_response_maps(self, bank, image):
+        """scan() 只返回标量，不得返回响应图。
+
+        相机分辨率（2448×2048）下 72 张 float64 响应图共约 2.9 GB，
+        而 mean/std/mean(r²) 都只需要标量。这条断言防止有人为了「复用」
+        把响应图缓存下来。
+        """
+        features, energies = bank.scan(image)
+
+        assert features.shape == (2 * bank.n_kernels,)
+        assert features.dtype == np.float64
+        assert all(np.isscalar(v) for g in energies for v in g)

@@ -74,8 +74,11 @@ class DetectionWorker(QThread):
             self.progress.emit(50)
             cv_heatmap = self.texture_analyzer.compute_cv_heatmap(gray)
 
-            # (4) 方向一致性
-            direction_consistency = self.texture_analyzer.direction_consistency(gray)
+            # (4) 方向一致性 —— 复用 analyze() 那一趟 Gabor 的能量，
+            # 避免对同一张图再卷一遍全部滤波器
+            direction_consistency = self.texture_analyzer.direction_consistency(
+                gray, texture_vec.gabor_orientation_energies
+            )
 
             # (5) 缺陷检测
             self.progress.emit(70)

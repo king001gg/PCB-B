@@ -15,6 +15,7 @@
 
 import os
 import sys
+import time
 import cv2
 import yaml
 import numpy as np
@@ -84,6 +85,8 @@ class MainWindow(QMainWindow):
         self.current_result: InspectionResult = None
         self.mode = self.config.get("system", {}).get("mode", "offline")
         self._live_mode = False
+        # 在线抓拍的板号（抓拍图没有文件路径，用它填 board_id）
+        self._snapshot_id: str = None
 
         # --- 构建 UI ---
         self._init_menu()
@@ -205,7 +208,9 @@ class MainWindow(QMainWindow):
         btn_row = QHBoxLayout()
 
         self.load_btn = QPushButton("📂 加载图像")
-        self.load_btn.clicked.connect(self.load_image)
+        # 按模式分派：离线选文件，在线从预览画面抓拍。
+        # 不能直接连 load_image —— 在线模式下按钮文案是「拍照」却弹文件选择框。
+        self.load_btn.clicked.connect(self._on_load_btn)
         btn_row.addWidget(self.load_btn)
 
         self.detect_btn = QPushButton("🔍 开始检测")
@@ -311,6 +316,9 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(4, 4, 4, 4)
         main_layout.addWidget(main_splitter)
 
+        # 启动时的按钮文案要跟配置里的模式一致（配置为在线时不能显示「加载图像」）
+        self._sync_mode_controls()
+
     def _init_statusbar(self):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -355,8 +363,62 @@ class MainWindow(QMainWindow):
                     self._set_image(str(files[0]))
                     break
 
+    def _on_load_btn(self):
+        """「加载图像 / 拍照」按钮：按当前模式分派。"""
+        if self.mode == "online":
+            self._capture_frame()
+        else:
+            self.load_image()
+
+    def _capture_frame(self) -> bool:
+        """抓拍当前预览帧作为待检测图像，并停掉预览。
+
+        抓拍即停预览，是刻意的：预览路径与检测路径都会写工艺面板，
+        同时运行会让数值来回跳（见 ``toggle_live_mode``）。停掉之后
+        整条流程与离线路径完全一致，也就不需要额外的互斥逻辑。
+
+        Returns:
+            是否成功抓到一帧。失败时会给出可操作的状态栏提示。
+        """
+        if not self._live_mode:
+            self.status_bar.showMessage("请先点「实时预览」，再从预览画面抓拍")
+            return False
+
+        frame = self.current_raw_image
+        if frame is None:
+            self.status_bar.showMessage("尚未取到画面，请稍候再拍")
+            return False
+
+        # 先复制再停预览：停预览会释放相机。复制是因为在途帧可能还没派发完，
+        # 而检测跑在后台线程里、跑完才读这张图，不能让它边跑边被覆盖。
+        frozen = frame.copy()
+        self._stop_live()
+
+        self.current_image_path = None
+        self._snapshot_id = f"抓拍-{time.strftime('%H%M%S')}"
+        self.current_raw_image = frozen
+        self.image_viewer.set_image(frozen)
+        self.detect_btn.setEnabled(True)
+        self._reset_result_views()
+        self.status_bar.showMessage(
+            f"已抓拍（{self._snapshot_id}）— 按「开始检测」运行完整检测"
+        )
+        return True
+
+    def _current_board_id(self) -> str:
+        """当前待检测图像的板号：文件用文件名，抓拍图用抓拍时间。"""
+        if self.current_image_path:
+            return os.path.basename(self.current_image_path)
+        return self._snapshot_id or ""
+
     def start_detection(self):
-        """启动后台检测线程。"""
+        """启动后台检测线程。
+
+        在线模式下先抓拍当前预览帧并停掉预览，之后走与离线完全相同的
+        路径 —— 检测期间不会再有取流路径往工艺面板写值。
+        """
+        if self._live_mode and not self._capture_frame():
+            return
         if self.current_raw_image is None:
             self.status_bar.showMessage("请先加载图像")
             return
@@ -365,10 +427,12 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.detect_btn.setEnabled(False)
         self.load_btn.setEnabled(False)
+        # 检测期间禁止再进预览：两条路径都会写工艺面板，同时跑数值会来回跳
+        self.live_btn.setEnabled(False)
         self.status_bar.showMessage("正在检测中...")
 
         # 后台线程
-        board_id = os.path.basename(self.current_image_path) if self.current_image_path else ""
+        board_id = self._current_board_id()
         self.thread = DetectionWorker(
             image=self.current_raw_image,
             preprocessor=self.preprocessor,
@@ -391,6 +455,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.detect_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
+        self.live_btn.setEnabled(True)
 
         self.current_result = result
 
@@ -423,6 +488,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setVisible(False)
         self.detect_btn.setEnabled(True)
         self.load_btn.setEnabled(True)
+        self.live_btn.setEnabled(True)
         self.result_text.setText(f"❌ 检测错误:\n{error_msg}")
         self.status_bar.showMessage("检测失败")
         QMessageBox.critical(self, "检测错误", error_msg)
@@ -430,9 +496,11 @@ class MainWindow(QMainWindow):
     def toggle_live_mode(self):
         """切换实时预览模式。
 
-        实时预览期间禁用「开始检测」：离线路径与在线路径都会写工艺面板，
-        同时运行会导致数值来回跳。按钮的启停由 _start_live / _stop_live
-        统一负责 —— 菜单里的「离线模式」也会调 _stop_live，集中在一处才不会漏。
+        预览与检测不会同时运行 —— 两条路径都会写工艺面板，同时跑数值会
+        来回跳。互斥靠「检测先抓拍并停掉预览」实现（见 _capture_frame），
+        而不是靠禁用按钮：在线模式下必须先预览、再抓拍，才能拿到待检测的图。
+        按钮的启停由 _start_live / _stop_live 统一负责 —— 菜单里的
+        「离线模式」也会调 _stop_live，集中在一处才不会漏。
         """
         self._live_mode = self.live_btn.isChecked()
         if self._live_mode:
@@ -497,6 +565,13 @@ class MainWindow(QMainWindow):
         self.image_viewer.set_image(self.current_raw_image)
 
         self.detect_btn.setEnabled(True)
+        self._snapshot_id = None
+        self._reset_result_views()
+
+        self.status_bar.showMessage(f"已加载: {os.path.basename(path)}")
+
+    def _reset_result_views(self) -> None:
+        """清空上一张图的检测结果与工艺面板。"""
         self.result_text.clear()
         self.score_label.setText("--")
         self.ok_ng_label.setText("等待检测...")
@@ -504,8 +579,6 @@ class MainWindow(QMainWindow):
             lbl.setText("--")
         # 清空工艺面板，避免上一张图的报警状态残留
         self.process_panel.reset()
-
-        self.status_bar.showMessage(f"已加载: {os.path.basename(path)}")
 
     def _refresh_process_panel(self, features) -> None:
         """刷新工艺参数监测面板。
@@ -617,7 +690,7 @@ class MainWindow(QMainWindow):
         self.camera_worker.start()
 
         # 相机是异步打开的，这里先按「已进入预览」处理；真失败会走
-        # _live_failed 把状态回滚。检测按钮在 _on_live_opened 里禁用。
+        # _live_failed 把状态回滚。检测按钮在 _on_live_opened 里启用。
         self.status_bar.showMessage("正在打开相机…")
 
     def _teardown_worker(self) -> None:
@@ -649,8 +722,9 @@ class MainWindow(QMainWindow):
 
     def _on_live_opened(self):
         """相机打开成功。"""
-        # 预览期间禁用离线检测：两条路径都会写工艺面板，同时跑会让数值来回跳
-        self.detect_btn.setEnabled(False)
+        # 预览期间允许检测：start_detection 会先抓拍当前帧并停掉预览，
+        # 再走离线路径，两条路径不会同时写工艺面板
+        self.detect_btn.setEnabled(True)
         self.status_bar.showMessage('实时预览模式 — 按"停止预览"退出')
 
     def _live_failed(self, message: str):
@@ -678,11 +752,17 @@ class MainWindow(QMainWindow):
         用 finally 保证异常路径也会解除。
         """
         try:
+            # 预览已停（例如刚抓拍完）时，在途的帧一律丢弃，
+            # 否则会把抓拍冻结下来的那张图覆盖掉
+            if not self._live_mode:
+                return
+
             self.current_raw_image = frame_rgb
             self.image_viewer.set_image(frame_rgb)
 
-            # 工艺参数监测走轻量路径：只算 8 级 GLCM（约 2ms）。
-            # 不跑 Gabor / SVM / 缺陷检测 —— 那部分单帧需数秒，无法实时。
+            # 工艺参数监测走轻量路径：只算 8 级 GLCM（相机分辨率下实测 6.6 ms）。
+            # 不跑 Gabor / SVM / 缺陷检测 —— 整条检测在相机分辨率下约 21 s，
+            # 无法逐帧跑；需要完整结果时走「抓拍 + 开始检测」。
             # 这里拿到的是 RGB（工作线程边界上转好的），与离线路径一致。
             # 两条路径颜色顺序不一致会让灰度转换权重对调，同一块板算出不同
             # 的特征值，破坏 R3 的一致性要求。
@@ -705,15 +785,20 @@ class MainWindow(QMainWindow):
     def _set_mode(self, mode: str):
         self.mode = mode
         self.config["system"]["mode"] = mode
+        self._sync_mode_controls()
         if mode == "online":
-            self.load_btn.setText("📷 拍照")
-            self.live_btn.setVisible(True)
             self.status_bar.showMessage("已切换到在线模式 — 请检查相机连接")
         else:
-            self.load_btn.setText("📂 加载图像")
-            self.live_btn.setVisible(True)
             self._stop_live()
             self.status_bar.showMessage("已切换到离线模式")
+
+    def _sync_mode_controls(self) -> None:
+        """按当前模式刷新按钮文案（不动预览状态、不写状态栏）。
+
+        文案与分派逻辑必须一起看 ``_on_load_btn``：只改文案不改槽函数，
+        就会变成「按『拍照』弹出文件选择框」—— 这正是修复前的状态。
+        """
+        self.load_btn.setText("📷 拍照" if self.mode == "online" else "📂 加载图像")
 
     # ------------------------------------------------------------------
     # 其他
