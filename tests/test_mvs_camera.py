@@ -1568,13 +1568,47 @@ class TestApplyExposureGain:
         assert "曝光" in out and "增益" in out
 
 
+class TestApplyWhiteBalance:
+    """彩色相机必须关掉自动白平衡。
+
+    自动白平衡的工作目标就是「让画面不偏色」，而色度指标要测的恰恰是偏色 ——
+    开着它，一块均匀氧化的板会被算法主动校回中性色，ΔH 与 ΔS 一起被抹平，
+    指标恒报正常，比不装这个功能还糟。
+    """
+
+    def test_balance_white_auto_is_turned_off(self, cam, sdk):
+        cam._apply_white_balance()
+        assert sdk.state.set_calls() == [
+            ("SetEnumValueByString", "BalanceWhiteAuto", "Off"),
+        ]
+
+    def test_mono_camera_missing_node_is_silent(self, cam, sdk, capsys):
+        """灰度相机没有这个节点，天天都会失败，不该刷警告。
+
+        判据是「节点在不在」而不是「写成功没有」：写不进去但节点存在，
+        才是真问题（下面那条）。
+        """
+        sdk.state.set_ret["BalanceWhiteAuto"] = ERR_UNSUPPORTED
+        sdk.state.get_ret["BalanceWhiteAuto"] = ERR_UNSUPPORTED
+        cam._apply_white_balance()
+        assert capsys.readouterr().out == ""
+
+    def test_existing_node_that_refuses_the_write_is_reported(self, cam, sdk, capsys):
+        """节点在、却写不进去 —— 色度指标会帧间不可重复，必须让用户知道。"""
+        sdk.state.set_ret["BalanceWhiteAuto"] = ERR_UNSUPPORTED
+        sdk.state.get_ret["BalanceWhiteAuto"] = 0
+        cam._apply_white_balance()
+        out = capsys.readouterr().out
+        assert "白平衡" in out
+
+
 class TestApplyParams:
     """_apply_params 的整体顺序与别名解析。"""
 
     def test_full_call_order(self, cam, sdk, make_camera):
-        """先几何（宽高）→ 像素格式 → 曝光增益 → 采集模式 → 触发。
+        """先几何（宽高）→ 像素格式 → 曝光增益 → 白平衡 → 采集模式 → 触发。
 
-        顺序有讲究：曝光/增益必须先关自动模式，像素格式必须在曝光之前
+        顺序有讲究：曝光/增益/白平衡都必须先关自动模式，像素格式必须在曝光之前
         （改格式会重置部分参数），触发最后（它决定相机会不会立刻跑起来）。
         """
         camera = make_camera()
@@ -1593,9 +1627,25 @@ class TestApplyParams:
             ("SetFloatValue", "ExposureTime", 5000.0),
             ("SetEnumValueByString", "GainAuto", "Off"),
             ("SetFloatValue", "Gain", 1.0),
+            ("SetEnumValueByString", "BalanceWhiteAuto", "Off"),
             ("SetEnumValueByString", "AcquisitionMode", "Continuous"),
             ("SetEnumValue", "TriggerMode", TRIGGER_MODE_OFF),
         ]
+
+    def test_mono_camera_wiring_stays_quiet(self, cam, sdk, capsys):
+        """灰度相机走完整的 _apply_params 不该刷白平衡警告。
+
+        与上面那条顺序断言分开写：顺序断言红了只说"顺序变了"，这条说的是
+        "接上了、而且在没有该节点的相机上不吵"。
+        """
+        sdk.state.set_ret["BalanceWhiteAuto"] = ERR_UNSUPPORTED
+        sdk.state.get_ret["BalanceWhiteAuto"] = ERR_UNSUPPORTED
+        cam._apply_params()
+        out = capsys.readouterr().out
+        # 先确认它真的被调过。少了这一句，下面那条"没有警告"在方法压根没接上时
+        # 也照样成立 —— 一条永远不会红的测试比没有测试更糟。
+        assert ("SetEnumValueByString", "BalanceWhiteAuto", "Off") in sdk.state.calls
+        assert "白平衡" not in out
 
     def test_pixel_format_goes_through_alias_table(self, sdk, make_camera):
         """配置写 RGB8 也要落到 SDK 认的 RGB8_Packed。"""
@@ -2138,9 +2188,19 @@ class TestGetActualParams:
 
     def test_enum_params_are_reported(self, cam, sdk):
         params = cam.get_actual_params()
-        for key in ("exposure_auto", "gain_auto", "trigger_mode",
-                    "trigger_source", "acquisition_mode"):
+        for key in ("exposure_auto", "gain_auto", "balance_white_auto",
+                    "trigger_mode", "trigger_source", "acquisition_mode"):
             assert key in params
+
+    def test_white_balance_is_read_back_so_the_user_can_see_it(self, cam, sdk):
+        """关闭自动白平衡失败只打一行日志，界面必须能回读核对。
+
+        灰度相机没这个节点，_get_enum 返回 None，键会被省略而不是塞假值。
+        """
+        assert cam.get_actual_params()["balance_white_auto"] == 0
+
+        sdk.state.get_ret["BalanceWhiteAuto"] = ERR_UNSUPPORTED
+        assert "balance_white_auto" not in cam.get_actual_params()
 
     def test_unreadable_nodes_are_omitted(self, cam, sdk):
         """读不到的节点不能塞一个假值进去 —— 宁可缺键。"""

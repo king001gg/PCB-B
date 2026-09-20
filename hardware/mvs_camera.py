@@ -18,9 +18,13 @@ harvesters 作为消费端在解码时抛 ``UnicodeDecodeError``，``create()`` 
 
 像素格式
 --------
-默认请求 Mono8（本项目的 GLCM 纹理分析与缺陷检测都基于灰度）。
-若相机给出别的格式，会转成 BGR8 三通道或 Mono8，
+请求什么由 ``camera.pixel_format`` 决定，**本驱动不做假设**：
+彩色输入（含 Bayer / YUV）统一经 SDK 转成 BGR8 三通道，灰度输入转成 Mono8，
 以符合 ``CameraBase.acquire()`` 的契约：``(H, W, 3) BGR`` 或 ``(H, W)`` 灰度。
+
+换成彩色相机时**本文件无需改动** —— 相机给什么格式都能落到 BGR。要动的是配置：
+``camera.pixel_format`` 得填该型号真正支持的枚举名（很多海康彩色机只出 Bayer，
+不出 RGB8/BGR8 打包格式），并且色度指标的绝对值基准需要重新标定。
 """
 
 import os
@@ -412,8 +416,9 @@ class MvsCamera(CameraBase):
     def _apply_params(self) -> None:
         """按正确顺序下发参数。
 
-        顺序有讲究：先几何（宽高）再像素格式，然后曝光增益，最后触发。
-        曝光/增益必须先关自动模式，否则手动值会被自动算法立刻覆盖。
+        顺序有讲究：先几何（宽高）再像素格式，然后曝光增益与白平衡，最后触发。
+        曝光/增益/白平衡都必须先关自动模式，否则手动值会被自动算法立刻覆盖。
+        （白平衡还有第二重理由，见 ``_apply_white_balance``。）
         """
         # 1) 宽高：相机对对齐有要求（常为 8 的倍数），失败不致命，
         #    后面 get_actual_params() 会把真实生效值读回来给用户看。
@@ -431,10 +436,14 @@ class MvsCamera(CameraBase):
         # 3) 曝光与增益
         self._apply_exposure_gain()
 
-        # 4) 采集模式：连续
+        # 4) 白平衡（彩色相机才有）：和曝光增益同属"成像亮度/色彩"一组，
+        #    紧挨着下发。灰度相机没这个节点，失败是预期的。
+        self._apply_white_balance()
+
+        # 5) 采集模式：连续
         self._set_enum_str("AcquisitionMode", "Continuous")
 
-        # 5) 触发
+        # 6) 触发
         self._apply_trigger()
 
     def _apply_exposure_gain(self) -> None:
@@ -454,6 +463,27 @@ class MvsCamera(CameraBase):
         self._set_enum_str("GainAuto", "Off")
         if not self._set_float("Gain", self.gain):
             print(f"[Camera] 设置增益 {self.gain} 失败（可能超出相机量程）")
+
+    def _apply_white_balance(self) -> None:
+        """关掉自动白平衡（只有彩色相机有这个节点）。
+
+        理由和上面曝光/增益那条同源（自动模式会把写进去的值立刻覆盖），但对本
+        项目更致命：**自动白平衡的工作目标就是「让画面不偏色」，而色度指标要测的
+        恰恰是偏色**。两者直接对着干 —— 一块均匀氧化的板会被算法主动校回中性色，
+        ΔH 与 ΔS 一起被抹平，指标恒报正常，比不装这个功能还糟。它还会让同一块板
+        相邻两帧的色相漂移，污染自适应判据的 MAD 基线。
+
+        这里**只设 Off，不设 Once**：``Once`` 是拿当前视野去算白平衡，而当前视野
+        就是正在检测的板子 —— 等于把"被测对象的色偏"当成白平衡基准，同样会把要
+        测的量消掉。白平衡标定是开机前对着标准白板做的一次性操作，在 MVS 客户端
+        里做完会存进相机，不需要（也不应该）每帧由本程序代劳。
+        """
+        if not self._set_enum_str("BalanceWhiteAuto", "Off"):
+            # 写失败有两种可能，必须分开对待：
+            #   节点不存在（灰度相机）—— 完全正常，天天都会发生，不该刷警告；
+            #   节点存在却写不进去 —— 那才是问题，色度指标会不可重复。
+            if self._get_enum("BalanceWhiteAuto") is not None:
+                print("[Camera] 关闭自动白平衡失败，色度指标可能帧间不可重复")
 
     def _apply_trigger(self) -> None:
         """下发触发模式与触发源。
@@ -677,6 +707,8 @@ class MvsCamera(CameraBase):
 
         for key, node in (("exposure_auto", "ExposureAuto"),
                           ("gain_auto", "GainAuto"),
+                          # 灰度相机没这个节点，_get_enum 返回 None 会被跳过
+                          ("balance_white_auto", "BalanceWhiteAuto"),
                           ("trigger_mode", "TriggerMode"),
                           ("trigger_source", "TriggerSource"),
                           ("acquisition_mode", "AcquisitionMode")):
