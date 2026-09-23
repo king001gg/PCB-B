@@ -45,4 +45,7 @@ openpyxl>=3.1.0               # Excel 读写
 # noise>=1.2.2                # Perlin 噪声库（回退到纯 Python 实现）
 
 # --- 测试 ---
+# pytest-cov 不是可选项：pytest.ini 的 addopts 里挂了 --cov / --cov-report，
+# 缺了它 `pytest` 会直接失败在 "unrecognized arguments: --cov"。
 pytest>=7.4.0
+pytest-cov>=4.1.0             # 覆盖率插件，同时会带入 coverage
