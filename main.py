@@ -1,4 +1,4 @@
-"""PCB 阻焊前喷砂质量在线检测系统 — 启动入口。
+"""PCB阻焊前喷砂质量在线检测系统V1.0 — 启动入口。
 
 用法：
     python main.py                          # 使用默认配置启动 GUI
@@ -17,7 +17,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 def main():
     parser = argparse.ArgumentParser(
-        description="PCB 阻焊前喷砂质量在线检测系统"
+        description="PCB阻焊前喷砂质量在线检测系统V1.0"
     )
     parser.add_argument(
         "--config", default="config/default.yaml",

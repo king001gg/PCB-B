@@ -1,4 +1,4 @@
-"""PCB 阻焊前喷砂质量在线检测系统 — PySide6 主窗口。
+"""PCB阻焊前喷砂质量在线检测系统V1.0 — PySide6 主窗口。
 
 重构自旧版 main_window.py，新增：
     - 多标签页布局（检测 / 参数 / 统计 / 历史）
@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self, config_path: str = None):
         super().__init__()
-        self.setWindowTitle("PCB 阻焊前喷砂质量在线检测系统")
+        self.setWindowTitle("PCB阻焊前喷砂质量在线检测系统V1.0")
         self.resize(1400, 900)
 
         # --- 加载配置 ---
@@ -842,8 +842,8 @@ class MainWindow(QMainWindow):
     def _show_about(self):
         QMessageBox.about(
             self, "关于",
-            "PCB 阻焊前喷砂质量在线检测系统\n\n"
-            "版本 2.0.0\n\n"
+            "PCB阻焊前喷砂质量在线检测系统V1.0\n\n"
+            "版本 V1.0\n\n"
             "基于机器视觉的喷砂表面质量评估系统\n"
             "纹理分析（GLCM+LBP+Gabor）+ SVM/CNN 缺陷分类\n\n"
             "核心技术：\n"
